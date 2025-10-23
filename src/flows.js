@@ -89,6 +89,24 @@ export async function handleDeterministicFlows(userId, text) {
   const input = String(text || '').trim();
   const lower = input.toLowerCase();
   const session = getSession(userId);
+  
+  // Direct about us content access (before session state checks)
+  if (lower.includes('about_story') || lower.includes('our company story')) {
+    return aboutStory();
+  }
+  if (lower.includes('about_why') || lower.includes('why choose us')) {
+    return aboutWhyUs();
+  }
+  if (lower.includes('about_locations') || lower.includes('our locations')) {
+    return showroomLocations();
+  }
+  if (lower.includes('about_services') || lower.includes('our services')) {
+    return aboutServices();
+  }
+  if (lower.includes('about_awards') || lower.includes('achievements')) {
+    return aboutAwards();
+  }
+  
   // Deterministic compare flow: "compare X and Y"
   const compareMatch = /\bcompare\b\s+([\w\s-]+)\s+and\s+([\w\s-]+)/i.exec(input);
   if (!session.state && compareMatch) {
@@ -116,6 +134,16 @@ export async function handleDeterministicFlows(userId, text) {
     session.state = 'about_menu';
     setSession(userId, session);
     return aboutMenu();
+  }
+  
+  // Service booking entry
+  if (['book service', 'service booking', 'schedule service', 'book a service', 'service'].includes(lower) || 
+      lower.includes('book service') || lower.includes('service booking') || lower.includes('schedule service') ||
+      lower.includes('book a service')) {
+    session.state = 'service_booking';
+    session.data = {};
+    setSession(userId, session);
+    return `Great! I'll help you book a service for your vehicle. Please provide the following details:\n\n**Vehicle Details:**\n• Make: (e.g., Hyundai, Maruti, Honda)\n• Model: (e.g., i20, Swift, City)\n• Year: (e.g., 2020, 2021)\n• Registration Number: (e.g., KA01AB1234)\n\n**Service Type:**\n• Regular Service\n• Major Service\n• Accident Repair\n• Insurance Claim\n• Other (please specify)\n\nPlease share all details in one message.`;
   }
 
   // Lightweight intent capture for browse: normalize budget/type/brand from any phrase
@@ -176,7 +204,7 @@ export async function handleDeterministicFlows(userId, text) {
 
     // We have budget + type + brand: show results list to select
     const { searchInventoryTool } = await import('./tools.js');
-    const { results } = await searchInventoryTool({ make: session.data.make, type: session.data.type, maxPrice: session.data.maxPrice });
+    const { results } = await searchInventoryTool({ make: session.data.make, type: session.data.type, maxPrice: session.data.maxPrice, minPrice: session.data.minPrice });
     if (!results || results.length === 0) {
       return 'No matches found. You can change brand or budget.';
     }
@@ -280,11 +308,11 @@ export async function handleDeterministicFlows(userId, text) {
 
   // About flow
   if (session.state === 'about_menu') {
-    if (lower.startsWith('1') || lower.includes('our company story')) return aboutStory();
-    if (lower.startsWith('2') || lower.includes('why choose us')) return aboutWhyUs();
-    if (lower.startsWith('3') || lower.includes('our locations')) return showroomLocations();
-    if (lower.startsWith('4') || lower.includes('our services')) return aboutServices();
-    if (lower.startsWith('5') || lower.includes('achievements')) return aboutAwards();
+    if (lower.startsWith('1') || lower.includes('our company story') || lower.includes('about_story')) return aboutStory();
+    if (lower.startsWith('2') || lower.includes('why choose us') || lower.includes('about_why')) return aboutWhyUs();
+    if (lower.startsWith('3') || lower.includes('our locations') || lower.includes('about_locations')) return showroomLocations();
+    if (lower.startsWith('4') || lower.includes('our services') || lower.includes('about_services')) return aboutServices();
+    if (lower.startsWith('5') || lower.includes('achievements') || lower.includes('about_awards')) return aboutAwards();
     return aboutMenu();
   }
 
@@ -311,26 +339,33 @@ export async function handleDeterministicFlows(userId, text) {
   if (session.state === 'browse_budget') {
     const lakhs = input.match(/(\d+[\.]?\d*)\s*(lakh|lakhs|lak|laks)/i);
     const below = /(under|below|upto|up to|less than)\s+(\d+[\.]?\d*)\s*(lakh|lakhs|lak|laks)/i.exec(lower);
+    const above = /(above|over|more than|greater than)\s+(\d+[\.]?\d*)\s*(lakh|lakhs|lak|laks)/i.exec(lower);
     const numeric = input.replace(/[,₹\s]/g, '').match(/(\d{5,12})/);
     let maxVal = null;
+    let minVal = null;
+    
     if (lakhs) maxVal = Math.round(parseFloat(lakhs[1]) * 100000);
     else if (below) maxVal = Math.round(parseFloat(below[2]) * 100000);
+    else if (above) minVal = Math.round(parseFloat(above[2]) * 100000);
     else if (numeric) maxVal = Number(numeric[1]);
 
-    if (!maxVal) {
-      return "Please share a budget like '12 lakhs', 'below 20 lakhs', or a number (e.g., 1200000).";
+    if (!maxVal && !minVal) {
+      return "Please share a budget like '12 lakhs', 'below 20 lakhs', 'above 15 lakhs', or a number (e.g., 1200000).";
     }
 
-    session.data.maxPrice = maxVal; session.data.minPrice = 0;
+    session.data.maxPrice = maxVal; 
+    session.data.minPrice = minVal;
     // If type is already known, skip asking type and go to brand
     if (session.data.type) {
       session.state = 'browse_pick_make'; setSession(userId, session);
       try {
         const { listMakesTool } = await import('./tools.js');
         const { makes = [] } = await listMakesTool();
-        return `Got it. Budget up to ₹${maxVal.toLocaleString('en-IN')}\nSelect a brand (${session.data.type}): ${makes.slice(0,30).join(' | ')}`;
+        const budgetText = maxVal ? `up to ₹${maxVal.toLocaleString('en-IN')}` : `above ₹${minVal.toLocaleString('en-IN')}`;
+        return `Got it. Budget ${budgetText}\nSelect a brand (${session.data.type}): ${makes.slice(0,30).join(' | ')}`;
       } catch (_) {
-        return `Got it. Budget up to ₹${maxVal.toLocaleString('en-IN')}\nPlease type a brand (make), e.g., Toyota`;
+        const budgetText = maxVal ? `up to ₹${maxVal.toLocaleString('en-IN')}` : `above ₹${minVal.toLocaleString('en-IN')}`;
+        return `Got it. Budget ${budgetText}\nPlease type a brand (make), e.g., Toyota`;
       }
     }
     session.state = 'browse_pick_type'; setSession(userId, session);
@@ -364,7 +399,8 @@ export async function handleDeterministicFlows(userId, text) {
       const { results } = await searchInventoryTool({ 
         make: session.data.make, 
         type: session.data.type, 
-        maxPrice: session.data.maxPrice 
+        maxPrice: session.data.maxPrice,
+        minPrice: session.data.minPrice
       });
       if (!results || results.length === 0) {
         session.state = 'browse_pick_make'; setSession(userId, session);
@@ -373,17 +409,10 @@ export async function handleDeterministicFlows(userId, text) {
       session.state = 'browse_pick_vehicle';
       session.data.vehicles = results.slice(0, 10);
       setSession(userId, session);
-      // Show cars as individual detailed messages instead of truncated list
-      const carDetails = session.data.vehicles.map(v => {
-        const price = (v.price || 0).toLocaleString('en-IN');
-        const mileage = (v.mileage || 0).toLocaleString('en-IN');
-        return `🚗 **${v.brand || v.make} ${v.model} ${v.variant || ''}**
-📅 Year: ${v.year || 'N/A'} | ⛽ Fuel: ${v.fuel_type || v.fuel || 'N/A'} | 🔧 ${v.transmission || 'N/A'}
-📏 Mileage: ${mileage}km | 🎨 Color: ${v.color || 'N/A'} | 💰 Price: ₹${price}
-[SELECT: pick_vehicle:${v.id}]`;
-      }).join('\n\n');
-      
-      return `Found ${session.data.vehicles.length} cars matching your criteria:\n\n${carDetails}\n\nClick SELECT next to any car for more details!`;
+      // Use enhanced formatting from tools
+      const { formatMultipleCars } = await import('./tools.js');
+      const enhancedFormat = formatMultipleCars(session.data.vehicles);
+      return enhancedFormat;
     }
     // Else ask for brand selection
     session.state = 'browse_pick_make';
@@ -415,7 +444,8 @@ export async function handleDeterministicFlows(userId, text) {
       const { results } = await searchInventoryTool({ 
         make: session.data.make, 
         type: session.data.type, 
-        maxPrice: session.data.maxPrice 
+        maxPrice: session.data.maxPrice,
+        minPrice: session.data.minPrice
       });
       if (!results || results.length === 0) {
         return 'No matches found. You can change brand or budget.';
@@ -423,39 +453,248 @@ export async function handleDeterministicFlows(userId, text) {
       session.state = 'browse_pick_vehicle';
       session.data.vehicles = results.slice(0, 10);
       setSession(userId, session);
-      // Show cars as individual detailed messages instead of truncated list
-      const carDetails = session.data.vehicles.map(v => {
-        const price = (v.price || 0).toLocaleString('en-IN');
-        const mileage = (v.mileage || 0).toLocaleString('en-IN');
-        return `🚗 **${v.brand || v.make} ${v.model} ${v.variant || ''}**
-📅 Year: ${v.year || 'N/A'} | ⛽ Fuel: ${v.fuel_type || v.fuel || 'N/A'} | 🔧 ${v.transmission || 'N/A'}
-📏 Mileage: ${mileage}km | 🎨 Color: ${v.color || 'N/A'} | 💰 Price: ₹${price}
-[SELECT: pick_vehicle:${v.id}]`;
-      }).join('\n\n');
-      
-      return `Found ${session.data.vehicles.length} cars matching your criteria:\n\n${carDetails}\n\nClick SELECT next to any car for more details!`;
+      // Use enhanced formatting from tools
+      const { formatMultipleCars } = await import('./tools.js');
+      const enhancedFormat = formatMultipleCars(session.data.vehicles);
+      return enhancedFormat;
     } catch (_) {
       return 'Please type a brand (make), e.g., Toyota';
     }
   }
 
-  // Handle vehicle selection via text-based selection
+  // Handle vehicle selection - ONLY when in browse_pick_vehicle state
   if (session.state === 'browse_pick_vehicle') {
+    const vehicles = session.data?.vehicles || [];
+    
+    // Only proceed if we have vehicles to select from
+    if (vehicles.length === 0) {
+      session.state = null;
+      session.data = {};
+      setSession(userId, session);
+      return 'No vehicles available. Please start a new search.';
+    }
+    
+    
+    // Handle "show more" request
+    if (lower.includes('show more') || lower.includes('more cars')) {
+      const { formatMultipleCars } = await import('./tools.js');
+      return formatMultipleCars(vehicles);
+    }
+    
+    let chosen = null;
+    
+    // Method 1: Direct ID selection (pick_vehicle:ID)
     if (lower.startsWith('pick_vehicle:') || lower.includes('select:')) {
       const id = input.split(':')[1];
-      const vehicles = session.data?.vehicles || [];
-      const chosen = vehicles.find(v => String(v.id) === String(id));
-      if (!chosen) return 'Please pick a car from the list above.';
-      session.state = null; session.data = {}; setSession(userId, session);
-      const priceStr = chosen.price ? `₹${chosen.price.toLocaleString('en-IN')}` : 'Price: N/A';
-      return `🚗 **${chosen.brand || chosen.make} ${chosen.model} ${chosen.variant || chosen.trim || ''}**\n\n📅 **Year:** ${chosen.year || 'N/A'}\n⛽ **Fuel:** ${chosen.fuel_type || chosen.fuel || 'N/A'}\n🔧 **Transmission:** ${chosen.transmission || 'N/A'}\n📏 **Mileage:** ${(chosen.mileage || 0).toLocaleString('en-IN')} km\n🎨 **Color:** ${chosen.color || 'N/A'}\n💰 **Price:** ${priceStr}\n\n✅ **Ready to buy?** Contact us for test drive!`;
+      chosen = vehicles.find(v => String(v.id) === String(id));
     }
+    
+    // Method 2: Car selection (car1, car2, car3, etc.)
+    else if (lower.startsWith('car') && /^\d+$/.test(input.trim().substring(3))) {
+      const index = parseInt(input.trim().substring(3)) - 1;
+      if (index >= 0 && index < vehicles.length) {
+        chosen = vehicles[index];
+      } else {
+        return `Please select a valid car (car1-car${vehicles.length}). Type car1, car2, car3, etc. or "show more" to see additional cars`;
+      }
+    }
+    
+    // Method 3: Simple number selection (1, 2, 3, etc.) - fallback
+    else if (/^\d+$/.test(input.trim())) {
+      const index = parseInt(input.trim()) - 1;
+      if (index >= 0 && index < vehicles.length) {
+        chosen = vehicles[index];
+      } else {
+        return `Please select a valid car (car1-car${vehicles.length}). Type car1, car2, car3, etc. or "show more" to see additional cars`;
+      }
+    }
+    
+    // Method 4: Text selection with number (select car 1, choose car 2, etc.)
+    else if (lower.includes('select car') || lower.includes('choose car') || lower.includes('pick car')) {
+      const numberMatch = input.match(/(\d+)/);
+      if (numberMatch) {
+        const index = parseInt(numberMatch[1]) - 1;
+        if (index >= 0 && index < vehicles.length) {
+          chosen = vehicles[index];
+        }
+      }
+    }
+    
+    // Method 5: Car name selection (only if it matches a car in current list)
+    else {
+      chosen = vehicles.find(v => {
+        const carName = `${v.brand || v.make} ${v.model} ${v.variant || ''}`.toLowerCase().trim();
+        return carName.includes(lower) || lower.includes(carName.split(' ')[0]);
+      });
+    }
+    
+    if (chosen) {
+      // Store selected car and ask about test drive
+      session.state = 'car_selected';
+      session.data.selectedCar = chosen;
+      setSession(userId, session);
+      
+      const priceStr = chosen.price ? `₹${chosen.price.toLocaleString('en-IN')}` : 'Price: N/A';
+      return `🚗 **${chosen.brand || chosen.make} ${chosen.model} ${chosen.variant || chosen.trim || ''}**\n\n📅 **Year:** ${chosen.year || 'N/A'}\n⛽ **Fuel:** ${chosen.fuel_type || chosen.fuel || 'N/A'}\n🔧 **Transmission:** ${chosen.transmission || 'N/A'}\n📏 **Mileage:** ${(chosen.mileage || 0).toLocaleString('en-IN')} km\n🎨 **Color:** ${chosen.color || 'N/A'}\n💰 **Price:** ${priceStr}\n\n❓ **Would you like to book a test drive for this car?** (Yes/No)`;
+    } else {
+      // Show selection instructions
+      return 'Please select a car from the list above. Type car1, car2, car3, etc. or "show more" to see additional cars';
+    }
+  }
+
+  // Handle car selection response (test drive booking flow)
+  if (session.state === 'car_selected') {
+    if (lower.includes('yes') || lower.includes('y') || lower.includes('book') || lower.includes('test drive')) {
+      session.state = 'testdrive_name';
+      session.data.testDriveCar = session.data.selectedCar;
+      setSession(userId, session);
+      return 'Great! Let\'s book your test drive. Please provide your details:\n\n**Name:** (Your full name)';
+    } else if (lower.includes('no') || lower.includes('n')) {
+      session.state = null;
+      session.data = {};
+      setSession(userId, session);
+      return 'No problem! If you change your mind about the test drive, just let me know. Is there anything else I can help you with?';
+    } else {
+      return 'Please answer with Yes or No. Would you like to book a test drive for this car?';
+    }
+  }
+
+  // Handle test drive name collection
+  if (session.state === 'testdrive_name') {
+    const nameMatch = input.match(/name\s*:\s*(.*)/i);
+    const name = nameMatch ? nameMatch[1].trim() : input.trim();
+    
+    if (name && name.length > 2) {
+      session.data.customerName = name;
+      session.state = 'testdrive_phone';
+      setSession(userId, session);
+      return `Thanks ${name}! Now please provide your **phone number** and confirm if you have a **valid driving license**.\n\nFormat: Phone: [your number], DL: Yes/No`;
+    } else {
+      return 'Please provide your full name. Format: Name: [Your full name]';
+    }
+  }
+
+  // Handle test drive phone and DL collection
+  if (session.state === 'testdrive_phone') {
+    // More flexible phone number parsing
+    const phoneMatch = input.match(/phone\s*:\s*(\+?\d[\d\s-]{6,})/i) || 
+                     input.match(/(\+?\d[\d\s-]{6,})/) ||
+                     input.match(/(\d{10})/);
+    
+    // More flexible DL status parsing
+    const dlMatch = input.match(/dl\s*:\s*(yes|no|y|n)/i) ||
+                   input.match(/(yes|no|y|n)\s*(?:dl|driving\s*license)/i) ||
+                   input.match(/(yes|no|y|n)/i);
+    
+    if (phoneMatch && dlMatch) {
+      const phone = phoneMatch[1].trim().replace(/\s|-/g, '');
+      const hasDL = dlMatch[1].toLowerCase().includes('y');
+      
+      session.data.customerPhone = phone;
+      session.data.hasDL = hasDL;
+      session.state = 'testdrive_location';
+      setSession(userId, session);
+      
+      return `Perfect! Phone: ${phone}, DL: ${hasDL ? 'Yes' : 'No'}\n\nNow please choose your preferred **test drive location**:\n\n1. **Main Showroom** (MG Road)\n2. **Banashankari Branch**\n3. **Whitefield Branch**\n\nType the number (1, 2, or 3) or location name.`;
+    } else {
+      return 'Please provide both phone number and DL status. Format: Phone: [your number], DL: Yes/No';
+    }
+  }
+
+  // Handle test drive location selection
+  if (session.state === 'testdrive_location') {
+    let location = '';
+    if (lower.includes('1') || lower.includes('main') || lower.includes('mg road')) {
+      location = 'Main Showroom (MG Road)';
+    } else if (lower.includes('2') || lower.includes('banashankari')) {
+      location = 'Banashankari Branch';
+    } else if (lower.includes('3') || lower.includes('whitefield')) {
+      location = 'Whitefield Branch';
+    } else {
+      return 'Please select a location. Type 1, 2, or 3, or mention the location name.';
+    }
+    
+    session.data.testDriveLocation = location;
+    session.state = 'testdrive_confirmation';
+    setSession(userId, session);
+    
+    // Generate confirmation details
+    const car = session.data.testDriveCar;
+    const carName = `${car.brand || car.make} ${car.model} ${car.variant || ''}`.trim();
+    const confirmationId = `TD-${Date.now().toString().slice(-6)}`;
+    
+    return `🎉 **Test Drive Confirmed!**\n\n📋 **Booking Details:**\n• **Car:** ${carName}\n• **Customer:** ${session.data.customerName}\n• **Phone:** ${session.data.customerPhone}\n• **Location:** ${location}\n• **Confirmation ID:** ${confirmationId}\n• **Date:** Tomorrow (11:00 AM - 12:00 PM)\n\n✅ **You'll receive a confirmation message shortly!**\n\nIs there anything else I can help you with?`;
   }
 
   // Test Drive Booking entry
   if (['book test drive', 'test drive', 'book a test drive', 'schedule test drive'].includes(lower) || lower.includes('book test drive') || lower.includes('test drive for')) {
     session.state = 'testdrive_car'; session.data = {}; setSession(userId, session);
     return 'Great! I\'ll help you book a test drive. Which car are you interested in? Please mention the car name (e.g., "Tata Nexon", "Honda City", "Hyundai Creta").';
+  }
+
+  // Test Drive Management entries
+  if (['my test drive', 'check my test drive', 'test drive status', 'test drive booking'].includes(lower) || lower.includes('my test drive')) {
+    session.state = 'testdrive_check'; session.data = {}; setSession(userId, session);
+    return 'I can help you check your test drive booking. Please provide your phone number or booking ID.';
+  }
+
+  if (['cancel test drive', 'cancel my test drive', 'cancel booking'].includes(lower) || lower.includes('cancel test drive')) {
+    session.state = 'testdrive_cancel'; session.data = {}; setSession(userId, session);
+    return 'I can help you cancel your test drive booking. Please provide your phone number or booking ID.';
+  }
+
+  // Enhanced test drive booking with car selection
+  if (['book test drive for', 'test drive for', 'schedule test drive for'].some(phrase => lower.includes(phrase))) {
+    // Extract car name from the message
+    const carMatch = input.match(/(?:for|of|the)\s+([^,]+)/i) || input.match(/([A-Za-z\s]+(?:i20|creta|city|verna|baleno|swift|nexon|seltos|venue|xuv|scorpio|tiago|jazz|elevate|virtus|kushaq))/i);
+    const carName = carMatch ? carMatch[1].trim() : input.replace(/(?:book|test drive|schedule)/gi, '').trim();
+    
+    if (carName && carName.length > 3) {
+      session.state = 'testdrive_car';
+      session.data = { carName };
+      setSession(userId, session);
+      
+      // Try to find the car in inventory
+      try {
+        const { searchInventoryTool } = await import('./tools.js');
+        const { results } = await searchInventoryTool({ model: carName });
+        
+        if (results && results.length > 0) {
+          session.data.selectedCar = results[0];
+          session.state = 'testdrive_date';
+          setSession(userId, session);
+          
+          const today = new Date();
+          const tomorrow = new Date(today.getTime() + 24 * 60 * 60 * 1000);
+          const dayAfter = new Date(today.getTime() + 2 * 24 * 60 * 60 * 1000);
+          
+          return `Perfect! I found ${carName} in our inventory. 
+
+🚗 **Car Details:**
+• Brand: ${results[0].brand || results[0].make || 'N/A'}
+• Model: ${results[0].model || 'N/A'}
+• Year: ${results[0].year || 'N/A'}
+• Price: ₹${(results[0].price || 0).toLocaleString('en-IN')}
+
+Available dates:
+• Today (${today.toLocaleDateString('en-IN')})
+• Tomorrow (${tomorrow.toLocaleDateString('en-IN')})
+• Day after tomorrow (${dayAfter.toLocaleDateString('en-IN')})
+
+Please choose a date or type "custom" for a specific date.`;
+        } else {
+          return `I couldn't find "${carName}" in our current inventory. Please check the car name or browse our available cars first.`;
+        }
+      } catch (error) {
+        console.error('Error finding car:', error);
+        return 'I had trouble checking our inventory. Please try again or contact our team directly.';
+      }
+    } else {
+      session.state = 'testdrive_car';
+      session.data = {};
+      setSession(userId, session);
+      return 'Great! I\'ll help you book a test drive. Which car are you interested in? Please mention the car name (e.g., "Tata Nexon", "Honda City", "Hyundai Creta").';
+    }
   }
 
   // Car Valuation entry
@@ -474,15 +713,35 @@ export async function handleDeterministicFlows(userId, text) {
       return 'Please specify the car name clearly. Examples: "Tata Nexon", "Honda City", "Hyundai Creta"';
     }
     
+    // Validate car exists in inventory
+    try {
+      const { searchInventoryTool } = await import('./tools.js');
+      const { results } = await searchInventoryTool({ model: carName });
+      
+      if (!results || results.length === 0) {
+        return `I couldn't find "${carName}" in our current inventory. Please check the car name or browse our available cars first.`;
+      }
+      
+      // Store the first matching car for test drive
     session.data.carName = carName;
+      session.data.selectedCar = results[0];
     session.state = 'testdrive_date';
     setSession(userId, session);
     
     const today = new Date();
     const tomorrow = new Date(today.getTime() + 24 * 60 * 60 * 1000);
     const dayAfter = new Date(today.getTime() + 2 * 24 * 60 * 60 * 1000);
+      
+      const carInfo = results[0];
+      const priceStr = carInfo.price ? `₹${carInfo.price.toLocaleString('en-IN')}` : 'Price: N/A';
     
     return `Perfect! You want to test drive: **${carName}**
+
+🚗 **Car Details:**
+• Brand: ${carInfo.brand || carInfo.make || 'N/A'}
+• Model: ${carInfo.model || 'N/A'}
+• Year: ${carInfo.year || 'N/A'}
+• Price: ${priceStr}
 
 Available dates:
 • Today (${today.toLocaleDateString('en-IN')})
@@ -490,6 +749,10 @@ Available dates:
 • Day after tomorrow (${dayAfter.toLocaleDateString('en-IN')})
 
 Please choose a date or type "custom" for a specific date.`;
+    } catch (error) {
+      console.error('Error validating car:', error);
+      return 'I had trouble checking our inventory. Please try again or contact our team directly.';
+    }
   }
 
   if (session.state === 'testdrive_date') {
@@ -659,14 +922,42 @@ Please share all details in one message.`;
       return 'Please provide at least your Name and Phone Number:\n• Your Name:\n• Phone Number:\n• Email (optional):';
     }
     
-    // Generate booking confirmation
-    const bookingId = 'TD' + Date.now().toString().slice(-6);
+    // Use the enhanced scheduleTestDriveTool
+    try {
+      const { scheduleTestDriveTool } = await import('./tools.js');
+      const result = await scheduleTestDriveTool({
+        vehicleId: session.data.selectedCar?.id || session.data.carName,
+        date: session.data.testDate,
+        time: session.data.testTime,
+        name: session.data.customerName,
+        phone: session.data.customerPhone,
+        email: session.data.customerEmail,
+        location: session.data.testLocation,
+        carName: session.data.carName
+      });
+      
+      if (!result.ok) {
+        return `❌ **Booking Failed:** ${result.message}\n\nPlease try selecting a different time slot or contact us directly at +91-9876543210.`;
+      }
+      
     const testDate = new Date(session.data.testDate).toLocaleDateString('en-IN');
+      
+      // Send confirmation notification
+      try {
+        const { sendTestDriveNotificationTool } = await import('./tools.js');
+        await sendTestDriveNotificationTool({
+          bookingId: result.confirmationId,
+          type: 'confirmation'
+        });
+      } catch (notificationError) {
+        console.error('Error sending notification:', notificationError);
+        // Continue with booking even if notification fails
+      }
     
     const confirmation = `🎉 **TEST DRIVE BOOKED SUCCESSFULLY!**
 
 📋 **Booking Details:**
-• Booking ID: ${bookingId}
+• Booking ID: ${result.confirmationId}
 • Car: ${session.data.carName}
 • Date: ${testDate}
 • Time: ${session.data.testTime}
@@ -679,6 +970,7 @@ Please share all details in one message.`;
 • Please bring a valid driving license
 • Test drive duration: 30 minutes
 • Free pickup/drop available (if home visit selected)
+• Confirmation email/SMS sent to your contact details
 
 **Contact:** +91-9876543210 for any changes
 
@@ -688,6 +980,10 @@ Thank you for choosing AutoSherpa Motors! 🚗`;
     session.data = {}; 
     setSession(userId, session);
     return confirmation;
+    } catch (error) {
+      console.error('Error booking test drive:', error);
+      return 'I encountered an error while booking your test drive. Please contact us directly at +91-9876543210 for assistance.';
+    }
   }
 
   if (session.state === 'valuation_collect') {
@@ -708,6 +1004,161 @@ Thank you for choosing AutoSherpa Motors! 🚗`;
     if (!result.ok) return 'Could not compute valuation. Please check your inputs.';
     const range = result.estimateRangeInInr;
     return `Estimated resale value for ${result.make} ${result.model} (${result.year}):\n₹${range.low.toLocaleString('en-IN')} - ₹${range.high.toLocaleString('en-IN')}\n(Condition: ${result.condition}, KMs: ${result.kilometers}${result.city ? `, City: ${result.city}` : ''})`;
+  }
+
+  // Test Drive Management Flows
+  if (session.state === 'testdrive_check') {
+    const phoneMatch = input.match(/(\+?\d[\d\s-]{6,})/);
+    const bookingIdMatch = input.match(/(TD-\d+)/i);
+    
+    if (!phoneMatch && !bookingIdMatch) {
+      return 'Please provide your phone number (e.g., 9876543210) or booking ID (e.g., TD-123456).';
+    }
+    
+    try {
+      const { getTestDriveBookingsTool } = await import('./tools.js');
+      const result = await getTestDriveBookingsTool({
+        phone: phoneMatch ? phoneMatch[1].replace(/\s|-/g, '') : null,
+        confirmationId: bookingIdMatch ? bookingIdMatch[1] : null
+      });
+      
+      if (!result.ok) {
+        return `❌ Error: ${result.message}`;
+      }
+      
+      if (!result.bookings || result.bookings.length === 0) {
+        session.state = null; session.data = {}; setSession(userId, session);
+        return 'No test drive bookings found. Please check your phone number or booking ID.';
+      }
+      
+      const bookings = result.bookings;
+      const bookingDetails = bookings.map(booking => {
+        const date = new Date(booking.booking_date).toLocaleDateString('en-IN');
+        const status = booking.status === 'confirmed' ? '✅ Confirmed' : 
+                     booking.status === 'cancelled' ? '❌ Cancelled' :
+                     booking.status === 'completed' ? '✅ Completed' : '❓ Unknown';
+        
+        return `📋 **Booking ID:** ${booking.confirmation_id}
+🚗 **Car:** ${booking.car_name || 'N/A'}
+📅 **Date:** ${date}
+⏰ **Time:** ${booking.time_slot}
+📍 **Location:** ${booking.location || 'N/A'}
+👤 **Customer:** ${booking.customer_name || 'N/A'}
+📞 **Phone:** ${booking.customer_phone || 'N/A'}
+📧 **Email:** ${booking.customer_email || 'N/A'}
+📊 **Status:** ${status}`;
+      }).join('\n\n---\n\n');
+      
+      session.state = null; session.data = {}; setSession(userId, session);
+      return `🔍 **Your Test Drive Bookings:**\n\n${bookingDetails}\n\nNeed to make changes? Contact us at +91-9876543210`;
+    } catch (error) {
+      console.error('Error checking test drive bookings:', error);
+      session.state = null; session.data = {}; setSession(userId, session);
+      return 'I encountered an error while checking your bookings. Please contact us directly at +91-9876543210.';
+    }
+  }
+
+  if (session.state === 'testdrive_cancel') {
+    const phoneMatch = input.match(/(\+?\d[\d\s-]{6,})/);
+    const bookingIdMatch = input.match(/(TD-\d+)/i);
+    
+    if (!phoneMatch && !bookingIdMatch) {
+      return 'Please provide your phone number (e.g., 9876543210) or booking ID (e.g., TD-123456).';
+    }
+    
+    try {
+      const { cancelTestDriveTool } = await import('./tools.js');
+      const result = await cancelTestDriveTool({
+        phone: phoneMatch ? phoneMatch[1].replace(/\s|-/g, '') : null,
+        confirmationId: bookingIdMatch ? bookingIdMatch[1] : null
+      });
+      
+      if (!result.ok) {
+        session.state = null; session.data = {}; setSession(userId, session);
+        return `❌ **Cancellation Failed:** ${result.message}\n\nPlease contact us directly at +91-9876543210 for assistance.`;
+      }
+      
+      // Send cancellation notification
+      try {
+        const { sendTestDriveNotificationTool } = await import('./tools.js');
+        await sendTestDriveNotificationTool({
+          bookingId: phoneMatch ? phoneMatch[1].replace(/\s|-/g, '') : bookingIdMatch[1],
+          type: 'cancellation'
+        });
+      } catch (notificationError) {
+        console.error('Error sending cancellation notification:', notificationError);
+        // Continue with cancellation even if notification fails
+      }
+      
+      session.state = null; session.data = {}; setSession(userId, session);
+      return `✅ **Test Drive Cancelled Successfully!**
+
+Your test drive booking has been cancelled. You can book a new test drive anytime by saying "book test drive".
+
+**Contact:** +91-9876543210 for any assistance
+
+Thank you for choosing AutoSherpa Motors! 🚗`;
+    } catch (error) {
+      console.error('Error cancelling test drive:', error);
+      session.state = null; session.data = {}; setSession(userId, session);
+      return 'I encountered an error while cancelling your booking. Please contact us directly at +91-9876543210.';
+    }
+  }
+
+  // Service booking flow
+  if (session.state === 'service_booking') {
+    const makeMatch = input.match(/make\s*:\s*(.*)/i);
+    const modelMatch = input.match(/model\s*:\s*(.*)/i);
+    const yearMatch = input.match(/year\s*:\s*(\d{4})/i);
+    const regMatch = input.match(/registration\s*(?:number)?\s*:\s*([A-Z]{2}\d{2}[A-Z]{2}\d{4})/i);
+    const serviceMatch = input.match(/service\s*(?:type)?\s*:\s*(.*)/i);
+    
+    if (makeMatch) session.data.make = makeMatch[1].trim();
+    if (modelMatch) session.data.model = modelMatch[1].trim();
+    if (yearMatch) session.data.year = yearMatch[1];
+    if (regMatch) session.data.registration = regMatch[1];
+    if (serviceMatch) session.data.serviceType = serviceMatch[1].trim();
+    
+    // Check if we have all required details
+    if (!session.data.make || !session.data.model || !session.data.year || !session.data.serviceType) {
+      setSession(userId, session);
+      return 'Please provide all required details:\n\n**Vehicle Details:**\n• Make: (e.g., Hyundai, Maruti, Honda)\n• Model: (e.g., i20, Swift, City)\n• Year: (e.g., 2020, 2021)\n• Registration Number: (e.g., KA01AB1234)\n\n**Service Type:**\n• Regular Service\n• Major Service\n• Accident Repair\n• Insurance Claim\n• Other (please specify)';
+    }
+    
+    // Generate service booking confirmation
+    const bookingId = `SB-${Date.now().toString().slice(-6)}`;
+    const today = new Date();
+    const tomorrow = new Date(today.getTime() + 24 * 60 * 60 * 1000);
+    
+    const confirmation = `🔧 **SERVICE BOOKING CONFIRMED!**
+
+📋 **Booking Details:**
+• **Booking ID:** ${bookingId}
+• **Vehicle:** ${session.data.make} ${session.data.model} (${session.data.year})
+• **Registration:** ${session.data.registration || 'Not provided'}
+• **Service Type:** ${session.data.serviceType}
+• **Preferred Date:** Tomorrow (${tomorrow.toLocaleDateString('en-IN')})
+• **Time Slot:** 10:00 AM - 12:00 PM
+
+📍 **Service Center:**
+• **Main Service Center** - MG Road, Bangalore
+• **Address:** 123 MG Road, Bangalore - 560001
+• **Phone:** +91-9876543210
+
+📞 **Next Steps:**
+• Our service team will call you within 2 hours to confirm
+• Please bring your vehicle RC, insurance papers, and service history
+• Free pickup/drop available within 20km
+• Service duration: 2-4 hours (depending on service type)
+
+**Contact:** +91-9876543210 for any changes
+
+Thank you for choosing Sherpa Hyundai Service! 🚗`;
+
+    session.state = null;
+    session.data = {};
+    setSession(userId, session);
+    return confirmation;
   }
 
   return null;

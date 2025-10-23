@@ -88,6 +88,28 @@ export async function ensureSchema() {
       created_at timestamptz default now()
     );
     create index if not exists conversation_history_user_idx on conversation_history(user_id, created_at desc);
+
+    -- Test drive bookings table
+    create table if not exists test_drive_bookings (
+      id bigserial primary key,
+      confirmation_id varchar(20) unique not null,
+      vehicle_id varchar(50),
+      car_name varchar(100),
+      booking_date date not null,
+      time_slot varchar(50) not null,
+      customer_name varchar(100),
+      customer_phone varchar(20),
+      customer_email varchar(100),
+      location varchar(200),
+      status varchar(20) default 'confirmed' check (status in ('confirmed', 'completed', 'cancelled', 'no_show')),
+      notes text,
+      created_at timestamptz default now(),
+      updated_at timestamptz default now()
+    );
+    
+    create index if not exists test_drive_bookings_date_idx on test_drive_bookings(booking_date, time_slot);
+    create index if not exists test_drive_bookings_confirmation_idx on test_drive_bookings(confirmation_id);
+    create index if not exists test_drive_bookings_phone_idx on test_drive_bookings(customer_phone);
   `);
 }
 
