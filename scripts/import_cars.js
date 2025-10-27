@@ -62,7 +62,24 @@ async function main() {
           registration_number, brand, model, variant, type, year, fuel_type, transmission, mileage, price, color, engine_cc, power_bhp, seats, description
         ) values (
           $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15
-        )`,
+        )
+        ON CONFLICT (registration_number) 
+        DO UPDATE SET
+          brand = EXCLUDED.brand,
+          model = EXCLUDED.model,
+          variant = EXCLUDED.variant,
+          type = EXCLUDED.type,
+          year = EXCLUDED.year,
+          fuel_type = EXCLUDED.fuel_type,
+          transmission = EXCLUDED.transmission,
+          mileage = EXCLUDED.mileage,
+          price = EXCLUDED.price,
+          color = EXCLUDED.color,
+          engine_cc = EXCLUDED.engine_cc,
+          power_bhp = EXCLUDED.power_bhp,
+          seats = EXCLUDED.seats,
+          description = EXCLUDED.description,
+          updated_at = NOW()`,
         [registration_number, brand, model, variant, type, year, fuel_type, transmission, mileage, price, color, engine_cc, power_bhp, seats, description]
       );
     }

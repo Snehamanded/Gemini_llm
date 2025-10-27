@@ -1,4 +1,5 @@
 import { getSession, setSession } from './session.js';
+import { detectLanguage, getTranslation, translateResponse } from './language.js';
 
 const contactMenu = () => ({
   type: 'buttons',
@@ -90,6 +91,40 @@ export async function handleDeterministicFlows(userId, text) {
   const lower = input.toLowerCase();
   const session = getSession(userId);
   
+  // Enhanced context retention - don't restart conversation if user is in middle of a flow
+  if (session.state && !lower.includes('hi') && !lower.includes('hello') && !lower.includes('start over') && !lower.includes('reset')) {
+    // Continue with existing flow instead of restarting
+    // This prevents the bot from restarting conversations unexpectedly
+  }
+  
+  // Detect language and set user preference
+  const detectedLang = detectLanguage(input);
+  
+  // Enhanced Hinglish detection for mixed Hindi-English patterns
+  const isHinglishInput = /[a-zA-Z]/.test(input) && (
+    input.includes('main') || input.includes('aap') || input.includes('hai') || 
+    input.includes('hain') || input.includes('chahta') || input.includes('chahiye') ||
+    input.includes('dekh') || input.includes('raha') || input.includes('rahi') ||
+    input.includes('hun') || input.includes('ke') || input.includes('liye') ||
+    input.includes('se') || input.includes('tak') || input.includes('lakh')
+  );
+  
+  // Set language preference
+  if (isHinglishInput) {
+    session.data = session.data || {};
+    session.data.language = 'hinglish';
+    setSession(userId, session);
+  } else if (detectedLang === 'english' && session.data?.language && session.data.language !== 'english') {
+    session.data.language = 'english';
+    setSession(userId, session);
+  } else if (detectedLang !== 'english') {
+    session.data = session.data || {};
+    session.data.language = detectedLang;
+    setSession(userId, session);
+  }
+  
+  const userLang = session.data?.language || 'english';
+  
   // Direct about us content access (before session state checks)
   if (lower.includes('about_story') || lower.includes('our company story')) {
     return aboutStory();
@@ -107,92 +142,300 @@ export async function handleDeterministicFlows(userId, text) {
     return aboutAwards();
   }
   
-  // Deterministic compare flow: "compare X and Y"
+  // Enhanced car search detection for multiple languages with fuzzy spelling
+  const fuzzySpellingMap = {
+    'laksh': 'lakh', 'laks': 'lakh', 'lak': 'lakh',
+    'bellow': 'below', 'belwo': 'below',
+    'hundai': 'hyundai', 'hundi': 'hyundai',
+    'maruti suzuki': 'maruti', 'maruti suzuki': 'maruti',
+    'tata': 'tata', 'TATA': 'tata'
+  };
+  
+  // Apply fuzzy spelling corrections
+  let correctedInput = input;
+  for (const [wrong, correct] of Object.entries(fuzzySpellingMap)) {
+    correctedInput = correctedInput.replace(new RegExp(wrong, 'gi'), correct);
+  }
+  
+  // Define correctedLower for use throughout the function
+  const correctedLower = correctedInput.toLowerCase();
+  
+  if (!session.state && (
+    lower.includes('कार खरीदना') || lower.includes('कार खरीद') || lower.includes('कार') ||
+    lower.includes('ಕಾರು ಖರೀದಿಸಲು') || lower.includes('ಕಾರು') || lower.includes('ಕಾರು ಹುಡುಕಿ') ||
+    lower.includes('कार खरेदी') || lower.includes('गाडी') ||
+    lower.includes('buy car') || lower.includes('looking for car') || lower.includes('car search') ||
+    // Hinglish patterns
+    lower.includes('car khareedna') || lower.includes('second hand car') || lower.includes('car dekh') ||
+    lower.includes('car lena') || lower.includes('car chahiye') ||
+    // Enhanced patterns for better intent recognition
+    lower.includes('need a used car') || lower.includes('looking for a vehicle') || 
+    lower.includes('suitable for my family') || lower.includes('family of') ||
+    lower.includes('vehicle under') || lower.includes('car under')
+  )) {
+    session.data = session.data || {};
+    session.state = 'browse_budget';
+    setSession(userId, session);
+    
+    const budgetMessages = {
+      english: "What's your budget (maximum)?\nYou can type values like '12 lakhs', 'below 20 lakhs', or a number like 1200000.",
+      hinglish: "Aapka budget kya hai? (Maximum)\nAap values type kar sakte hain jaise '12 lakhs', 'below 20 lakhs', ya number jaise 1200000.",
+      hindi: "आपका बजट क्या है? (अधिकतम)\nआप '12 लाख', '20 लाख से कम', या 1200000 जैसी संख्या टाइप कर सकते हैं।",
+      kannada: "ನಿಮ್ಮ ಬಜೆಟ್ ಎಷ್ಟು? (ಗರಿಷ್ಠ)\nನೀವು '12 ಲಕ್ಷ', '20 ಲಕ್ಷಕ್ಕಿಂತ ಕಡಿಮೆ', ಅಥವಾ 1200000 ನಂತಹ ಸಂಖ್ಯೆಯನ್ನು ಟೈಪ್ ಮಾಡಬಹುದು.",
+      marathi: "तुमचा बजेट किती? (जास्तीत जास्त)\nतुम्ही '12 लाख', '20 लाख खाली', किंवा 1200000 सारख्या संख्या टाइप करू शकता."
+    };
+    
+    return budgetMessages[userLang] || budgetMessages.english;
+  }
+  
+  // Enhanced car comparison flow with multilingual support
   const compareMatch = /\bcompare\b\s+([\w\s-]+)\s+and\s+([\w\s-]+)/i.exec(input);
-  if (!session.state && compareMatch) {
-    const car1 = compareMatch[1].trim();
-    const car2 = compareMatch[2].trim();
+  const hinglishCompareMatch = /(compare|तुलना|तुलना करना|compare karna|तुलना करें)\s+([\w\s-]+)\s+(aur|and|और|के साथ|और)\s+([\w\s-]+)/i.exec(input);
+  const hindiCompareMatch = /([\w\s]+)\s+(और|के साथ)\s+([\w\s]+)\s+(की तुलना|तुलना|compare)/i.exec(input);
+  
+  if (!session.state && (compareMatch || hinglishCompareMatch || hindiCompareMatch)) {
+    let car1, car2;
+    
+    if (compareMatch) {
+      car1 = compareMatch[1].trim();
+      car2 = compareMatch[2].trim();
+    } else if (hinglishCompareMatch) {
+      car1 = hinglishCompareMatch[2].trim();
+      car2 = hinglishCompareMatch[4].trim();
+    } else if (hindiCompareMatch) {
+      car1 = hindiCompareMatch[1].trim();
+      car2 = hindiCompareMatch[3].trim();
+    }
+    
     try {
       const { compareCarsTool } = await import('./tools.js');
       const result = await compareCarsTool({ car1, car2 });
-      if (!result.ok) return `I couldn't find those in the inventory. Could you check the names?`;
-      const c1 = result.car1; const c2 = result.car2;
+      if (!result.ok) {
+        const errorMessages = {
+          english: `I couldn't find those in the inventory. Could you check the names?`,
+          hindi: `मुझे इन्वेंटरी में ये कारें नहीं मिलीं। कृपया नाम जांचें।`,
+          kannada: `ಇನ್ವೆಂಟರಿಯಲ್ಲಿ ಆ ಕಾರುಗಳು ಸಿಗಲಿಲ್ಲ. ದಯವಿಟ್ಟು ಹೆಸರುಗಳನ್ನು ಪರಿಶೀಲಿಸಿ.`,
+          marathi: `मला इन्व्हेंटरीमध्ये त्या कारा सापडल्या नाहीत. कृपया नावे तपासा.`
+        };
+        return errorMessages[userLang] || errorMessages.english;
+      }
+      
+      const c1 = result.car1; 
+      const c2 = result.car2;
       const line = (c) => c ? `${c.make} ${c.model} • ₹${(c.price||0).toLocaleString('en-IN')} • ${c.fuel||'N/A'} • ${c.mileage||'N/A'} km` : 'N/A';
-      return `Here's a quick comparison:\n\n• ${line(c1)}\n• ${line(c2)}\n\nAnything specific you'd like me to compare (price, mileage, features)?`;
+      
+      const comparisonMessages = {
+        english: `Here's a quick comparison:\n\n• ${line(c1)}\n• ${line(c2)}\n\nAnything specific you'd like me to compare (price, mileage, features)?`,
+        hindi: `यहाँ त्वरित तुलना है:\n\n• ${line(c1)}\n• ${line(c2)}\n\nक्या आप चाहते हैं कि मैं कुछ विशिष्ट चीज़ों की तुलना करूं (कीमत, माइलेज, फीचर्स)?`,
+        kannada: `ಇಲ್ಲಿ ತ್ವರಿತ ಹೋಲಿಕೆ:\n\n• ${line(c1)}\n• ${line(c2)}\n\nನೀವು ನಿರ್ದಿಷ್ಟವಾಗಿ ಏನನ್ನಾದರೂ ಹೋಲಿಸಲು ಬಯಸುತ್ತೀರಾ (ಬೆಲೆ, ಮೈಲೇಜ್, ವೈಶಿಷ್ಟ್ಯಗಳು)?`,
+        marathi: `येथे त्वरित तुलना आहे:\n\n• ${line(c1)}\n• ${line(c2)}\n\nतुम्हाला काही विशिष्ट गोष्टींची तुलना करायची आहे का (किंमत, माइलेज, फीचर्स)?`
+      };
+      
+      return comparisonMessages[userLang] || comparisonMessages.english;
     } catch (_) {
       // fallthrough to Gemini
     }
   }
 
-  // Entry commands
-  if (['3', 'contact', 'contact our team', 'contact us', 'team'].includes(lower)) {
+  // Enhanced contact information flow with multilingual support
+  if (['3', 'contact', 'contact our team', 'contact us', 'team', 'showroom', 'address', 'location', 'phone'].includes(lower) ||
+      lower.includes('contact') || lower.includes('showroom') || lower.includes('address') || 
+      lower.includes('location') || lower.includes('phone') || lower.includes('पता') || 
+      lower.includes('संपर्क') || lower.includes('शोरूम') || lower.includes('फोन') ||
+      lower.includes('contact janna') || lower.includes('address chahiye') || lower.includes('phone number')) {
     session.state = 'contact_menu';
     setSession(userId, session);
-    return contactMenu();
+    
+    // Check if input is Hinglish
+    const isHinglish = /[a-zA-Z]/.test(input) && /[हिंदीकन्नडमराठी]/.test(input) || 
+                       /(main|aap|hai|hain|chahta|chahti|hoon|hain|dekh|raha|rahi|tha|lagbhag|se|lakh|ke|beech|petrol|hi|chahiye|zaroor|pehle|dikha|dijiye|ji|theek|dhanyavaad|swagat|sir|aapka|madad|kar|sakta|kya|mann|koi|khaas|brand|ya|model|bahut|badhiya|chunaav|budget|kitna|range|hamare|paas|model|dono|uplabdh|variant|chahte|bilkul|test|drive|lena|chahenge|turant|gaadi|tayyar|karwata|waise|driving|license|aaiye|rahi|baad|emi|offer|poori|jankari|de|doonga)/i.test(input);
+    
+    const contactMessages = {
+      english: contactMenu(),
+      hindi: isHinglish ? 
+        `Main aapko hamari team se jodne mein khushi hoga! Aap kaise contact karna chahte hain?\n\n1. **Abhi call karein** - turant sahayata ke liye\n2. **Callback maangein** - hamari team aapko call karegi\n3. **Hamare showroom aayein** - sthan aur samay ki jaankari\n\nKripya 1, 2, ya 3 type karein.` :
+        `मैं आपको हमारी टीम से जुड़ने में खुशी होगी! आप कैसे संपर्क करना चाहते हैं?\n\n1. **अभी कॉल करें** - तुरंत सहायता के लिए\n2. **कॉलबैक मांगें** - हमारी टीम आपको कॉल करेगी\n3. **हमारे शोरूम आएं** - स्थान और समय की जानकारी\n\nकृपया 1, 2, या 3 टाइप करें।`,
+      kannada: `ನಮ್ಮ ತಂಡದೊಂದಿಗೆ ಸಂಪರ್ಕಿಸಲು ನಾನು ಸಂತೋಷದಿಂದ ಸಹಾಯ ಮಾಡುತ್ತೇನೆ! ನೀವು ಹೇಗೆ ಸಂಪರ್ಕಿಸಲು ಬಯಸುತ್ತೀರಿ?\n\n1. **ಈಗ ಕರೆ ಮಾಡಿ** - ತಕ್ಷಣ ಸಹಾಯಕ್ಕಾಗಿ\n2. **ಕಾಲ್ಬ್ಯಾಕ್ ವಿನಂತಿಸಿ** - ನಮ್ಮ ತಂಡವು ನಿಮಗೆ ಕರೆ ಮಾಡುತ್ತದೆ\n3. **ನಮ್ಮ ಶೋರೂಮ್ ಬನ್ನಿ** - ಸ್ಥಳ ಮತ್ತು ಸಮಯದ ಮಾಹಿತಿ\n\nದಯವಿಟ್ಟು 1, 2, ಅಥವಾ 3 ಟೈಪ್ ಮಾಡಿ.`,
+      marathi: `मी तुमच्याला आमच्या टीमशी जोडण्यात आनंद होईल! तुम्ही कसे संपर्क साधू इच्छिता?\n\n1. **आत्ता कॉल करा** - त्वरित सहायतेसाठी\n2. **कॉलबॅक मागा** - आमची टीम तुम्हाला कॉल करेल\n3. **आमच्या शोरूमला या** - स्थान आणि वेळेची माहिती\n\nकृपया 1, 2, किंवा 3 टाइप करा.`
+    };
+    
+    return contactMessages[userLang] || contactMessages.english;
   }
-  if (['4', 'about', 'about us'].includes(lower) || lower.includes('about')) {
+  if (['4', 'about', 'about us'].includes(lower) || lower.includes('about') ||
+      lower.includes('aapke bare mein') || lower.includes('company ke bare mein') || lower.includes('business ke bare mein') ||
+      lower.includes('aapke bare mein batao') || lower.includes('company information') || lower.includes('about us chahiye')) {
     session.state = 'about_menu';
     setSession(userId, session);
+    
+    // Check if input is Hinglish
+    const isHinglish = /[a-zA-Z]/.test(input) && /[हिंदीकन्नडमराठी]/.test(input) || 
+                       /(main|aap|hai|hain|chahta|chahti|hoon|hain|dekh|raha|rahi|tha|lagbhag|se|lakh|ke|beech|petrol|hi|chahiye|zaroor|pehle|dikha|dijiye|ji|theek|dhanyavaad|swagat|sir|aapka|madad|kar|sakta|kya|mann|koi|khaas|brand|ya|model|bahut|badhiya|chunaav|budget|kitna|range|hamare|paas|model|dono|uplabdh|variant|chahte|bilkul|test|drive|lena|chahenge|turant|gaadi|tayyar|karwata|waise|driving|license|aaiye|rahi|baad|emi|offer|poori|jankari|de|doonga)/i.test(input);
+    
+    if (isHinglish) {
+      const aboutMessages = {
+        english: aboutMenu(),
+        hindi: `Sherpa Hyundai mein aapka swagat hai! Yahan aapko hamare bare mein kya janna hai:\n\n1. **Hamari Company Story** - Hamara safar aur vikas\n2. **Kyun Choose Karen** - Hamare advantages\n3. **Hamare Locations** - Showroom ki jaankari\n4. **Hamare Services** - Kya services dete hain\n5. **Achievements & Awards** - Hamare awards aur recognition\n\nKripya 1, 2, 3, 4, ya 5 type karein.`,
+        kannada: `ಶೆರ್ಪಾ ಹುಂಡೈಗೆ ಸ್ವಾಗತ! ನಮ್ಮ ಬಗ್ಗೆ ನೀವು ಏನು ತಿಳಿಯಲು ಬಯಸುತ್ತೀರಿ:\n\n1. **ನಮ್ಮ ಕಂಪನಿ ಕಥೆ** - ನಮ್ಮ ಪ್ರಯಾಣ ಮತ್ತು ಬೆಳವಣಿಗೆ\n2. **ಏಕೆ ಆಯ್ಕೆ ಮಾಡಬೇಕು** - ನಮ್ಮ ಪ್ರಯೋಜನಗಳು\n3. **ನಮ್ಮ ಸ್ಥಳಗಳು** - ಶೋರೂಮ್ ಮಾಹಿತಿ\n4. **ನಮ್ಮ ಸೇವೆಗಳು** - ಯಾವ ಸೇವೆಗಳನ್ನು ನೀಡುತ್ತೇವೆ\n5. **ಪ್ರಶಸ್ತಿಗಳು ಮತ್ತು ಪ್ರಶಸ್ತಿಗಳು** - ನಮ್ಮ ಪ್ರಶಸ್ತಿಗಳು ಮತ್ತು ಗುರುತಿಸುವಿಕೆ\n\nದಯವಿಟ್ಟು 1, 2, 3, 4, ಅಥವಾ 5 ಟೈಪ್ ಮಾಡಿ.`,
+        marathi: `शेरपा हुंडईमध्ये आपले स्वागत आहे! आमच्या बद्दल तुम्हाला काय जाणून घ्यायचे आहे:\n\n1. **आमची कंपनी कथा** - आमचा प्रवास आणि विकास\n2. **का निवडावे** - आमचे फायदे\n3. **आमची ठिकाणे** - शोरूम माहिती\n4. **आमच्या सेवा** - कोणत्या सेवा देतो\n5. **पुरस्कार आणि पुरस्कार** - आमचे पुरस्कार आणि ओळख\n\nकृपया 1, 2, 3, 4, किंवा 5 टाइप करा.`
+      };
+      
+      return aboutMessages[userLang] || aboutMessages.english;
+    }
+    
     return aboutMenu();
   }
   
-  // Service booking entry
+  // Insurance information flow with multilingual support
+  if (['insurance', 'car insurance', 'insurance policy', 'insurance premium', 'insurance quote'].includes(lower) ||
+      lower.includes('insurance') || lower.includes('policy') || lower.includes('premium') ||
+      lower.includes('बीमा') || lower.includes('इंश्योरेंस') || lower.includes('पॉलिसी') ||
+      lower.includes('insurance janna') || lower.includes('policy chahiye') || lower.includes('premium kitna')) {
+    session.state = 'insurance_inquiry';
+    session.data = {};
+    setSession(userId, session);
+    
+    // Check if input is Hinglish
+    const isHinglish = /[a-zA-Z]/.test(input) && /[हिंदीकन्नडमराठी]/.test(input) || 
+                       /(main|aap|hai|hain|chahta|chahti|hoon|hain|dekh|raha|rahi|tha|lagbhag|se|lakh|ke|beech|petrol|hi|chahiye|zaroor|pehle|dikha|dijiye|ji|theek|dhanyavaad|swagat|sir|aapka|madad|kar|sakta|kya|mann|koi|khaas|brand|ya|model|bahut|badhiya|chunaav|budget|kitna|range|hamare|paas|model|dono|uplabdh|variant|chahte|bilkul|test|drive|lena|chahenge|turant|gaadi|tayyar|karwata|waise|driving|license|aaiye|rahi|baad|emi|offer|poori|jankari|de|doonga)/i.test(input);
+    
+    const insuranceMessages = {
+      english: `Great! I'll help you with car insurance information. Please provide:\n\n**Vehicle Details:**\n• Car Model: (e.g., Hyundai i20, Maruti Swift)\n• Year of Purchase: (e.g., 2020, 2021)\n• Current Value: (e.g., ₹8,00,000)\n• Previous Claims: (Yes/No)\n\n**Coverage Type:**\n• Comprehensive (Full Coverage)\n• Third Party (Basic Coverage)\n• Zero Depreciation\n\nPlease share all details in one message.`,
+      hindi: isHinglish ? 
+        `Bahut badhiya! Main aapko car insurance ki jaankari mein madad karunga. Kripya ye details dein:\n\n**Gaadi ki jaankari:**\n• Car Model: (jaise, Hyundai i20, Maruti Swift)\n• Year of Purchase: (jaise, 2020, 2021)\n• Current Value: (jaise, ₹8,00,000)\n• Previous Claims: (Yes/No)\n\n**Coverage Type:**\n• Comprehensive (Full Coverage)\n• Third Party (Basic Coverage)\n• Zero Depreciation\n\nKripya saari jaankari ek saath bhejein.` :
+        `बहुत बढ़िया! मैं आपको कार इंश्योरेंस की जानकारी में मदद करूंगा। कृपया जानकारी दें:\n\n**गाड़ी की जानकारी:**\n• कार मॉडल: (जैसे, हुंडई i20, मारुति स्विफ्ट)\n• खरीद का साल: (जैसे, 2020, 2021)\n• वर्तमान मूल्य: (जैसे, ₹8,00,000)\n• पिछले क्लेम: (हाँ/नहीं)\n\n**कवरेज का प्रकार:**\n• कॉम्प्रिहेंसिव (पूर्ण कवरेज)\n• थर्ड पार्टी (बेसिक कवरेज)\n• जीरो डिप्रीसिएशन\n\nकृपया सभी जानकारी एक साथ भेजें।`,
+      kannada: `ಚೆನ್ನಾಗಿದೆ! ನಾನು ನಿಮಗೆ ಕಾರ್ ವಿಮೆಯ ಮಾಹಿತಿಯಲ್ಲಿ ಸಹಾಯ ಮಾಡುತ್ತೇನೆ. ದಯವಿಟ್ಟು ಒದಗಿಸಿ:\n\n**ವಾಹನದ ವಿವರಗಳು:**\n• ಕಾರ್ ಮಾಡೆಲ್: (ಉದಾ, ಹುಂಡೈ i20, ಮಾರುತಿ ಸ್ವಿಫ್ಟ್)\n• ಖರೀದಿಯ ವರ್ಷ: (ಉದಾ, 2020, 2021)\n• ಪ್ರಸ್ತುತ ಮೌಲ್ಯ: (ಉದಾ, ₹8,00,000)\n• ಹಿಂದಿನ ಹಕ್ಕುಗಳು: (ಹೌದು/ಇಲ್ಲ)\n\n**ಕವರೇಜ್ ಪ್ರಕಾರ:**\n• ಸಮಗ್ರ (ಪೂರ್ಣ ಕವರೇಜ್)\n• ಮೂರನೇ ಪಕ್ಷ (ಮೂಲಭೂತ ಕವರೇಜ್)\n• ಶೂನ್ಯ ಸವಕಲು\n\nದಯವಿಟ್ಟು ಎಲ್ಲಾ ವಿವರಗಳನ್ನು ಒಂದೇ ಸಂದೇಶದಲ್ಲಿ ಹಂಚಿಕೊಳ್ಳಿ.`,
+      marathi: `छान! मी तुम्हाला कार विम्याच्या माहितीत मदत करेन. कृपया माहिती द्या:\n\n**गाडीची माहिती:**\n• गाडीचे मॉडेल: (जसे, हुंडई i20, मारुती स्विफ्ट)\n• खरेदीचे वर्ष: (जसे, 2020, 2021)\n• सध्याचे मूल्य: (जसे, ₹8,00,000)\n• मागील दावे: (होय/नाही)\n\n**कव्हरेजचा प्रकार:**\n• व्यापक (पूर्ण कव्हरेज)\n• तृतीय पक्ष (मूलभूत कव्हरेज)\n• शून्य घसारा\n\nकृपया सर्व माहिती एकाच संदेशात सांगा.`
+    };
+    
+    return insuranceMessages[userLang] || insuranceMessages.english;
+  }
+
+  // Language switching
+  if (lower.includes('language') || lower.includes('भाषा') || lower.includes('ಭಾಷೆ') || lower.includes('भाषा')) {
+    session.state = 'language_selection';
+    setSession(userId, session);
+    return `🌐 **Select Language / भाषा चुनें / ಭಾಷೆ ಆಯ್ಕೆಮಾಡಿ / भाषा निवडा**
+
+1. **English** 🇺🇸
+2. **Hindi** 🇮🇳 (हिंदी)
+3. **Kannada** 🇮🇳 (ಕನ್ನಡ)
+4. **Marathi** 🇮🇳 (मराठी)
+
+Please type the number (1-4) or language name.`;
+  }
+
+  // Enhanced service booking entry with multilingual support
   if (['book service', 'service booking', 'schedule service', 'book a service', 'service'].includes(lower) || 
       lower.includes('book service') || lower.includes('service booking') || lower.includes('schedule service') ||
-      lower.includes('book a service')) {
+      lower.includes('book a service') || lower.includes('सर्विस') || lower.includes('सर्विस बुक') ||
+      lower.includes('service karva') || lower.includes('service chahiye') || lower.includes('गाड़ी की सर्विस')) {
     session.state = 'service_booking';
     session.data = {};
     setSession(userId, session);
-    return `Great! I'll help you book a service for your vehicle. Please provide the following details:\n\n**Vehicle Details:**\n• Make: (e.g., Hyundai, Maruti, Honda)\n• Model: (e.g., i20, Swift, City)\n• Year: (e.g., 2020, 2021)\n• Registration Number: (e.g., KA01AB1234)\n\n**Service Type:**\n• Regular Service\n• Major Service\n• Accident Repair\n• Insurance Claim\n• Other (please specify)\n\nPlease share all details in one message.`;
+    
+    // Check if input is Hinglish
+    const isHinglish = /[a-zA-Z]/.test(input) && /[हिंदीकन्नडमराठी]/.test(input) || 
+                       /(main|aap|hai|hain|chahta|chahti|hoon|hain|dekh|raha|rahi|tha|lagbhag|se|lakh|ke|beech|petrol|hi|chahiye|zaroor|pehle|dikha|dijiye|ji|theek|dhanyavaad|swagat|sir|aapka|madad|kar|sakta|kya|mann|koi|khaas|brand|ya|model|bahut|badhiya|chunaav|budget|kitna|range|hamare|paas|model|dono|uplabdh|variant|chahte|bilkul|test|drive|lena|chahenge|turant|gaadi|tayyar|karwata|waise|driving|license|aaiye|rahi|baad|emi|offer|poori|jankari|de|doonga)/i.test(input);
+    
+    const serviceMessages = {
+      english: `Great! I'll help you book a service for your vehicle. Please provide the following details:\n\n**Vehicle Details:**\n• Make: (e.g., Hyundai, Maruti, Honda)\n• Model: (e.g., i20, Swift, City)\n• Year: (e.g., 2020, 2021)\n• Registration Number: (e.g., KA01AB1234)\n\n**Service Type:**\n• Regular Service\n• Major Service\n• Accident Repair\n• Insurance Claim\n• Other (please specify)\n\nPlease share all details in one message.`,
+      hindi: isHinglish ? 
+        `Bahut badhiya! Main aapki gaadi ki service book karne mein madad karunga. Kripya ye details dein:\n\n**Gaadi ki jaankari:**\n• Brand: (jaise, Hyundai, Maruti, Honda)\n• Model: (jaise, i20, Swift, City)\n• Saal: (jaise, 2020, 2021)\n• Registration Number: (jaise, KA01AB1234)\n\n**Service ka type:**\n• Regular Service\n• Major Service\n• Accident Repair\n• Insurance Claim\n• Other (kripya batayein)\n\nKripya saari jaankari ek saath bhejein.` :
+        `बहुत बढ़िया! मैं आपकी गाड़ी की सर्विस बुक करने में मदद करूंगा। कृपया निम्नलिखित जानकारी दें:\n\n**गाड़ी की जानकारी:**\n• ब्रांड: (जैसे, हुंडई, मारुति, होंडा)\n• मॉडल: (जैसे, i20, स्विफ्ट, सिटी)\n• साल: (जैसे, 2020, 2021)\n• रजिस्ट्रेशन नंबर: (जैसे, KA01AB1234)\n\n**सर्विस का प्रकार:**\n• रेगुलर सर्विस\n• मेजर सर्विस\n• एक्सीडेंट रिपेयर\n• इंश्योरेंस क्लेम\n• अन्य (कृपया बताएं)\n\nकृपया सभी जानकारी एक साथ भेजें।`,
+      kannada: `ಚೆನ್ನಾಗಿದೆ! ನಿಮ್ಮ ವಾಹನಕ್ಕಾಗಿ ಸೇವೆಯನ್ನು ಬುಕ್ ಮಾಡಲು ನಾನು ಸಹಾಯ ಮಾಡುತ್ತೇನೆ. ದಯವಿಟ್ಟು ಈ ಕೆಳಗಿನ ವಿವರಗಳನ್ನು ಒದಗಿಸಿ:\n\n**ವಾಹನದ ವಿವರಗಳು:**\n• ಮೇಕ್: (ಉದಾ, ಹುಂಡೈ, ಮಾರುತಿ, ಹೋಂಡಾ)\n• ಮಾಡೆಲ್: (ಉದಾ, i20, ಸ್ವಿಫ್ಟ್, ಸಿಟಿ)\n• ವರ್ಷ: (ಉದಾ, 2020, 2021)\n• ನೋಂದಣಿ ಸಂಖ್ಯೆ: (ಉದಾ, KA01AB1234)\n\n**ಸೇವೆಯ ಪ್ರಕಾರ:**\n• ನಿಯಮಿತ ಸೇವೆ\n• ಪ್ರಮುಖ ಸೇವೆ\n• ಅಪಘಾತ ದುರಸ್ತಿ\n• ವಿಮೆ ಹಕ್ಕು\n• ಇತರೆ (ದಯವಿಟ್ಟು ನಿರ್ದಿಷ್ಟಪಡಿಸಿ)\n\nದಯವಿಟ್ಟು ಎಲ್ಲಾ ವಿವರಗಳನ್ನು ಒಂದೇ ಸಂದೇಶದಲ್ಲಿ ಹಂಚಿಕೊಳ್ಳಿ.`,
+      marathi: `छान! मी तुमच्या गाडीची सर्विस बुक करण्यात मदत करेन. कृपया खालील माहिती द्या:\n\n**गाडीची माहिती:**\n• ब्रँड: (जसे, हुंडई, मारुती, होंडा)\n• मॉडेल: (जसे, i20, स्विफ्ट, सिटी)\n• वर्ष: (जसे, 2020, 2021)\n• नोंदणी क्रमांक: (जसे, KA01AB1234)\n\n**सर्विसचा प्रकार:**\n• नियमित सर्विस\n• मुख्य सर्विस\n• अपघात दुरुस्ती\n• विमा दावा\n• इतर (कृपया सांगा)\n\nकृपया सर्व माहिती एकाच संदेशात सांगा.`
+    };
+    
+    return serviceMessages[userLang] || serviceMessages.english;
   }
 
-  // Lightweight intent capture for browse: normalize budget/type/brand from any phrase
+  // Enhanced budget extraction with fuzzy spelling and better pattern matching
   const extractBudget = () => {
-    const lakhs = input.match(/(\d+[\.]?\d*)\s*(lakh|lakhs|lak|laks)/i);
-    const below = /(under|below|upto|up to|less than)\s+(\d+[\.]?\d*)\s*(lakh|lakhs|lak|laks)/i.exec(lower);
-    const numeric = input.replace(/[,₹\s]/g, '').match(/(\d{5,12})/);
+    // Use corrected input for better matching
+    
+    // Handle various lakh patterns with fuzzy spelling
+    const lakhs = correctedInput.match(/(\d+[\.]?\d*)\s*(lakh|lakhs|lak|laks|laksh)/i);
+    const below = /(under|below|upto|up to|less than)\s+(\d+[\.]?\d*)\s*(lakh|lakhs|lak|laks|laksh)/i.exec(correctedLower);
+    const numeric = correctedInput.replace(/[,₹\s]/g, '').match(/(\d{5,12})/);
+    
     if (lakhs) return Math.round(parseFloat(lakhs[1]) * 100000);
     if (below) return Math.round(parseFloat(below[2]) * 100000);
     if (numeric) return Number(numeric[1]);
     return null;
   };
   const extractType = () => {
-    const m = /(hatchback|sedan|suv|mpv)/i.exec(lower);
+    const m = /(hatchback|sedan|suv|mpv)/i.exec(correctedLower);
     return m ? m[1].charAt(0).toUpperCase() + m[1].slice(1).toLowerCase() : undefined;
   };
 
-  // Only handle simple browse requests, not complex queries
-  if (!session.state && /^(browse|used cars|show cars|i want to buy|looking for a car)$/i.test(lower.trim())) {
+  // Enhanced brand extraction with better mapping
+  const extractBrand = () => {
+    const brandMappings = {
+      'maruti': 'maruti', 'maruti suzuki': 'maruti', 'maruti-suzuki': 'maruti',
+      'tata': 'tata', 'TATA': 'tata', 'tata motors': 'tata',
+      'hyundai': 'hyundai', 'hundai': 'hyundai', 'hundi': 'hyundai',
+      'honda': 'honda',
+      'toyota': 'toyota',
+      'ford': 'ford',
+      'volkswagen': 'volkswagen', 'vw': 'volkswagen',
+      'skoda': 'skoda',
+      'renault': 'renault',
+      'kia': 'kia',
+      'mahindra': 'mahindra'
+    };
+    
+    for (const [inputBrand, mappedBrand] of Object.entries(brandMappings)) {
+      if (correctedLower.includes(inputBrand.toLowerCase())) {
+        return mappedBrand;
+      }
+    }
+    return null;
+  };
+
+  // Enhanced browse flow with better context retention and fuzzy matching
+  if (!session.state && /^(browse|used cars|show cars|i want to buy|looking for a car|search used cars)$/i.test(lower.trim())) {
     session.data = session.data || {};
-    if (!session.data.maxPrice) {
+    
+    // Extract information from current input
       const b = extractBudget();
-      if (b) session.data.maxPrice = b; session.data.minPrice = 0;
-    }
-    if (!session.data.type) {
       const t = extractType();
-      if (t) session.data.type = t;
+    const brand = extractBrand();
+    
+    // Update session data with extracted information
+    if (b && !session.data.maxPrice) {
+      session.data.maxPrice = b;
+      session.data.minPrice = 0;
     }
-    if (!session.data.make) {
-      try {
-        const { listMakesTool } = await import('./tools.js');
-        const { makes = [] } = await listMakesTool();
-        const found = makes.find(m => lower.includes(String(m).toLowerCase()));
-        if (found) session.data.make = found;
-      } catch (_) {}
+    if (t && !session.data.type) {
+      session.data.type = t;
     }
+    if (brand && !session.data.make) {
+      session.data.make = brand;
+    }
+    
     setSession(userId, session);
 
     // Ask only the missing piece, in order: budget -> type -> brand
     if (!session.data.maxPrice) {
-      session.state = 'browse_budget'; setSession(userId, session);
-      return "What's your budget (maximum)? You can type '12 lakhs' or a number like 1200000.";
+      session.state = 'browse_budget'; 
+      setSession(userId, session);
+      const budgetMessages = {
+        english: "What's your budget (maximum)? You can type '12 lakhs' or a number like 1200000.",
+        hinglish: "Aapka budget kya hai? (Maximum) Aap '12 lakhs' ya number jaise 1200000 type kar sakte hain.",
+        hindi: "आपका बजट क्या है? (अधिकतम) आप '12 लाख' या 1200000 जैसी संख्या टाइप कर सकते हैं।",
+        kannada: "ನಿಮ್ಮ ಬಜೆಟ್ ಎಷ್ಟು? (ಗರಿಷ್ಠ) ನೀವು '12 ಲಕ್ಷ' ಅಥವಾ 1200000 ನಂತಹ ಸಂಖ್ಯೆಯನ್ನು ಟೈಪ್ ಮಾಡಬಹುದು.",
+        marathi: "तुमचा बजेट किती? (जास्तीत जास्त) तुम्ही '12 लाख' किंवा 1200000 सारख्या संख्या टाइप करू शकता."
+      };
+      return budgetMessages[userLang] || budgetMessages.english;
     }
     if (!session.data.type) {
-      session.state = 'browse_pick_type'; setSession(userId, session);
+      session.state = 'browse_pick_type'; 
+      setSession(userId, session);
       return 'Pick a body type: Hatchback | Sedan | SUV | MPV';
     }
     if (!session.data.make) {
-      session.state = 'browse_pick_make'; setSession(userId, session);
+      session.state = 'browse_pick_make'; 
+      setSession(userId, session);
       try {
         const { listMakesTool } = await import('./tools.js');
         const { makes = [] } = await listMakesTool();
@@ -204,61 +447,162 @@ export async function handleDeterministicFlows(userId, text) {
 
     // We have budget + type + brand: show results list to select
     const { searchInventoryTool } = await import('./tools.js');
-    const { results } = await searchInventoryTool({ make: session.data.make, type: session.data.type, maxPrice: session.data.maxPrice, minPrice: session.data.minPrice });
+    const { results } = await searchInventoryTool({ 
+      make: session.data.make, 
+      type: session.data.type, 
+      maxPrice: session.data.maxPrice, 
+      minPrice: session.data.minPrice 
+    });
+    
     if (!results || results.length === 0) {
       return 'No matches found. You can change brand or budget.';
     }
+    
     session.state = 'browse_pick_vehicle';
     session.data.vehicles = results.slice(0, 10);
     setSession(userId, session);
+    
     const trimTo = (s, n) => {
       const str = String(s || '');
       return str.length <= n ? str : str.slice(0, n - 1) + '…';
     };
+    
     const rows = session.data.vehicles.map(v => ({ 
       id: `pick_vehicle:${v.id}`, 
       title: trimTo(`${v.brand || v.make || ''} ${v.model || ''}`.trim(), 24), 
       description: trimTo(`Yr ${v.year || 'NA'} • ${v.fuel_type || v.fuel || 'NA'} • ${(v.transmission||'').toString() || 'NA'} • ${(v.mileage||0).toLocaleString('en-IN')}km • ₹${(v.price||0).toLocaleString('en-IN')}`, 72) 
     }));
+    
     return { type: 'list', bodyText: 'Select a car to see details:', buttonText: 'Select', sections: [{ title: 'Results', rows }] };
   }
 
   // Handle direct body-type mentions like "SUV", "sedan", etc. to start browse funnel
-  if (!session.state && /\b(hatchback|sedan|suv|mpv)s?\b/i.test(lower)) {
-    const m = /(hatchback|sedan|suv|mpv)/i.exec(lower);
+  if (!session.state && /\b(hatchback|sedan|suv|mpv)s?\b/i.test(correctedLower)) {
+    const m = /(hatchback|sedan|suv|mpv)/i.exec(correctedLower);
     const type = m ? m[1].charAt(0).toUpperCase() + m[1].slice(1).toLowerCase() : undefined;
     session.data = { ...(session.data || {}), type };
-    session.state = 'browse_budget'; setSession(userId, session);
-    return "Great! What's your budget (maximum)?\nYou can type values like '12 lakhs', 'below 20 lakhs', or a number like 1200000.";
-  }
-
-  // Only handle simple brand mentions for browse flow, not complex queries
-  if (!session.state && /^(i want|looking for|show me|find me).*car/i.test(lower.trim())) {
+    
+    // Check if budget is already mentioned in the same message
+    const budget = extractBudget();
+    if (budget) {
+      session.data.maxPrice = budget;
+      session.data.minPrice = 0;
+      session.state = 'browse_pick_make';
+      setSession(userId, session);
     try {
       const { listMakesTool } = await import('./tools.js');
       const { makes = [] } = await listMakesTool();
-      const found = makes.find(m => lower.includes(String(m).toLowerCase()));
-      if (found) {
-        session.data = { ...(session.data || {}), make: found };
-        session.state = 'browse_budget'; setSession(userId, session);
-        return `Great — ${found} it is. What's your budget (maximum)?\nYou can type values like '12 lakhs', 'below 20 lakhs', or a number like 1200000.`;
+        return `Great! ${type} under ₹${budget.toLocaleString('en-IN')}. Select a brand: ${makes.slice(0,30).join(' | ')}`;
+      } catch (_) {
+        return `Great! ${type} under ₹${budget.toLocaleString('en-IN')}. Please type a brand (make), e.g., Toyota`;
       }
-    } catch (_) {}
+    }
+    
+    session.state = 'browse_budget'; 
+    setSession(userId, session);
+    const budgetMessages = {
+      english: "Great! What's your budget (maximum)?\nYou can type values like '12 lakhs', 'below 20 lakhs', or a number like 1200000.",
+      hinglish: "Bahut badhiya! Aapka budget kya hai? (Maximum)\nAap values type kar sakte hain jaise '12 lakhs', 'below 20 lakhs', ya number jaise 1200000.",
+      hindi: "बहुत बढ़िया! आपका बजट क्या है? (अधिकतम)\nआप '12 लाख', '20 लाख से कम', या 1200000 जैसी संख्या टाइप कर सकते हैं।",
+      kannada: "ಬಹಳ ಚೆನ್ನಾಗಿದೆ! ನಿಮ್ಮ ಬಜೆಟ್ ಎಷ್ಟು? (ಗರಿಷ್ಠ)\nನೀವು '12 ಲಕ್ಷ', '20 ಲಕ್ಷಕ್ಕಿಂತ ಕಡಿಮೆ', ಅಥವಾ 1200000 ನಂತಹ ಸಂಖ್ಯೆಯನ್ನು ಟೈಪ್ ಮಾಡಬಹುದು.",
+      marathi: "खूप छान! तुमचा बजेट किती? (जास्तीत जास्त)\nतुम्ही '12 लाख', '20 लाख खाली', किंवा 1200000 सारख्या संख्या टाइप करू शकता."
+    };
+    return budgetMessages[userLang] || budgetMessages.english;
   }
 
-  // Contact flow
+  // Enhanced brand handling with better pattern matching
+  if (!session.state && /^(i want|looking for|show me|find me).*car/i.test(correctedLower.trim())) {
+    const brand = extractBrand();
+    if (brand) {
+      session.data = { ...(session.data || {}), make: brand };
+      
+      // Check if budget is already mentioned
+      const budget = extractBudget();
+      if (budget) {
+        session.data.maxPrice = budget;
+        session.data.minPrice = 0;
+        session.state = 'browse_pick_type';
+        setSession(userId, session);
+        return `Great! ${brand} under ₹${budget.toLocaleString('en-IN')}. Pick a body type: Hatchback | Sedan | SUV | MPV`;
+      }
+      
+      session.state = 'browse_budget'; 
+      setSession(userId, session);
+      const brandMessages = {
+        english: `Great — ${brand} it is. What's your budget (maximum)?\nYou can type values like '12 lakhs', 'below 20 lakhs', or a number like 1200000.`,
+        hinglish: `Bahut badhiya — ${brand} it is. Aapka budget kya hai? (Maximum)\nAap values type kar sakte hain jaise '12 lakhs', 'below 20 lakhs', ya number jaise 1200000.`,
+        hindi: `बहुत बढ़िया — ${brand} यह है। आपका बजट क्या है? (अधिकतम)\nआप '12 लाख', '20 लाख से कम', या 1200000 जैसी संख्या टाइप कर सकते हैं।`,
+        kannada: `ಬಹಳ ಚೆನ್ನಾಗಿದೆ — ${brand} ಇದು. ನಿಮ್ಮ ಬಜೆಟ್ ಎಷ್ಟು? (ಗರಿಷ್ಠ)\nನೀವು '12 ಲಕ್ಷ', '20 ಲಕ್ಷಕ್ಕಿಂತ ಕಡಿಮೆ', ಅಥವಾ 1200000 ನಂತಹ ಸಂಖ್ಯೆಯನ್ನು ಟೈಪ್ ಮಾಡಬಹುದು.`,
+        marathi: `खूप छान — ${brand} हे आहे. तुमचा बजेट किती? (जास्तीत जास्त)\nतुम्ही '12 लाख', '20 लाख खाली', किंवा 1200000 सारख्या संख्या टाइप करू शकता.`
+      };
+      return brandMessages[userLang] || brandMessages.english;
+    }
+  }
+
+  // Enhanced contact flow with multilingual support
   if (session.state === 'contact_menu') {
-    if (lower.startsWith('1') || lower.includes('call us now')) {
+    if (lower.startsWith('1') || lower.includes('call us now') || lower.includes('call') || 
+        lower.includes('कॉल') || lower.includes('फोन') || lower.includes('call karna')) {
       session.state = null; setSession(userId, session);
-      return contactCallNumbers();
+      
+      const callMessages = {
+        english: contactCallNumbers(),
+        hindi: `बिल्कुल! यहाँ हमारे डायरेक्ट कॉन्टैक्ट नंबर हैं तुरंत सहायता के लिए:\n\nसीधे कॉल करें:\nमुख्य शोरूम - बैंगलोर:\n- सेल्स: +91-9876543210\n- सर्विस: +91-9876543211\n- उपलब्ध: सोम-शनि: सुबह 9 - शाम 8, रवि: सुबह 10 - शाम 6\n\nब्रांच - इलेक्ट्रॉनिक सिटी:\n- सेल्स: +91-9876543212\n- उपलब्ध: सोम-शनि: सुबह 9 - शाम 8\n\nइमरजेंसी सपोर्ट:\n- 24/7 हेल्पलाइन: +91-9876543213\n\nप्रो टिप: व्हाट्सऐप के जरिए संपर्क करने का जिक्र करें प्राथमिकता सहायता के लिए!`,
+        kannada: `ಸರಿ! ತಕ್ಷಣ ಸಹಾಯಕ್ಕಾಗಿ ನಮ್ಮ ನೇರ ಸಂಪರ್ಕ ಸಂಖ್ಯೆಗಳು ಇಲ್ಲಿವೆ:\n\nನೇರವಾಗಿ ಕರೆ ಮಾಡಿ:\nಮುಖ್ಯ ಶೋರೂಮ್ - ಬೆಂಗಳೂರು:\n- ಮಾರಾಟ: +91-9876543210\n- ಸೇವೆ: +91-9876543211\n- ಲಭ್ಯ: ಸೋಮ-ಶನಿ: ಬೆಳಿಗ್ಗೆ 9 - ಸಂಜೆ 8, ಭಾನು: ಬೆಳಿಗ್ಗೆ 10 - ಸಂಜೆ 6\n\nಶಾಖೆ - ಎಲೆಕ್ಟ್ರಾನಿಕ್ ಸಿಟಿ:\n- ಮಾರಾಟ: +91-9876543212\n- ಲಭ್ಯ: ಸೋಮ-ಶನಿ: ಬೆಳಿಗ್ಗೆ 9 - ಸಂಜೆ 8\n\nಅತ್ಯವಶ್ಯಕ ಬೆಂಬಲ:\n- 24/7 ಸಹಾಯ ರೇಖೆ: +91-9876543213\n\nಪ್ರೋ ಟಿಪ್: ಪ್ರಾಥಮಿಕತೆ ಸಹಾಯಕ್ಕಾಗಿ ವಾಟ್ಸಾಪ್ ಮೂಲಕ ಸಂಪರ್ಕಿಸಿದ್ದನ್ನು ಉಲ್ಲೇಖಿಸಿ!`,
+        marathi: `बिल्कुल! त्वरित सहायतेसाठी आमचे थेट संपर्क क्रमांक येथे आहेत:\n\nथेट कॉल करा:\nमुख्य शोरूम - बंगळूर:\n- विक्री: +91-9876543210\n- सेवा: +91-9876543211\n- उपलब्ध: सोम-शनि: सकाळ 9 - संध्याकाळ 8, रवि: सकाळ 10 - संध्याकाळ 6\n\nशाखा - इलेक्ट्रॉनिक सिटी:\n- विक्री: +91-9876543212\n- उपलब्ध: सोम-शनि: सकाळ 9 - संध्याकाळ 8\n\nआणीबाणी समर्थन:\n- 24/7 मदत रेखा: +91-9876543213\n\nप्रो टिप: प्राधान्य सहायतेसाठी व्हॉट्सऍप मार्गे संपर्क केल्याचा उल्लेख करा!`
+      };
+      
+      return callMessages[userLang] || callMessages.english;
     }
-    if (lower.startsWith('2') || lower.includes('request a callback')) {
+    if (lower.startsWith('2') || lower.includes('request a callback') || lower.includes('callback') ||
+        lower.includes('कॉलबैक') || lower.includes('वापस कॉल') || lower.includes('callback chahiye')) {
       session.state = 'contact_callback_time'; setSession(userId, session);
-      return callbackTimeMenu();
+      
+      const callbackMessages = {
+        english: callbackTimeMenu(),
+        hindi: {
+          type: 'buttons',
+          bodyText: "बिल्कुल! हमारी टीम आपको वापस कॉल करेगी। आपको कब तक पहुंचना है?",
+          buttons: [
+            { id: 'cb_time_morning', title: 'सुबह (9 AM - 12 PM)' },
+            { id: 'cb_time_afternoon', title: 'दोपहर (12 PM - 4 PM)' },
+            { id: 'cb_time_evening', title: 'शाम (4 PM - 8 PM)' }
+          ]
+        },
+        kannada: {
+          type: 'buttons',
+          bodyText: "ಸರಿ! ನಮ್ಮ ತಂಡವು ನಿಮಗೆ ಮರಳಿ ಕರೆ ಮಾಡುತ್ತದೆ. ನಿಮಗೆ ಯಾವಾಗ ತಲುಪಬೇಕು?",
+          buttons: [
+            { id: 'cb_time_morning', title: 'ಬೆಳಿಗ್ಗೆ (9 AM - 12 PM)' },
+            { id: 'cb_time_afternoon', title: 'ಮಧ್ಯಾಹ್ನ (12 PM - 4 PM)' },
+            { id: 'cb_time_evening', title: 'ಸಂಜೆ (4 PM - 8 PM)' }
+          ]
+        },
+        marathi: {
+          type: 'buttons',
+          bodyText: "बिल्कुल! आमची टीम तुम्हाला परत कॉल करेल. तुम्हाला कधी पोहोचायचे आहे?",
+          buttons: [
+            { id: 'cb_time_morning', title: 'सकाळ (9 AM - 12 PM)' },
+            { id: 'cb_time_afternoon', title: 'दुपार (12 PM - 4 PM)' },
+            { id: 'cb_time_evening', title: 'संध्याकाळ (4 PM - 8 PM)' }
+          ]
+        }
+      };
+      
+      return callbackMessages[userLang] || callbackMessages.english;
     }
-    if (lower.startsWith('3') || lower.includes('visit our showroom')) {
+    if (lower.startsWith('3') || lower.includes('visit our showroom') || lower.includes('showroom') ||
+        lower.includes('शोरूम') || lower.includes('पता') || lower.includes('showroom janna')) {
       session.state = null; setSession(userId, session);
-      return showroomLocations();
+      
+      const showroomMessages = {
+        english: showroomLocations(),
+        hindi: `हम आपका स्वागत करना पसंद करेंगे! यहाँ हमारे स्थान हैं:\n\nशेरपा हुंडई स्थान:\n\nमुख्य शोरूम - बैंगलोर:\n- पता: 123 MG रोड, बैंगलोर - 560001\n- फोन: +91-9876543210\n- समय: सोम-शनि: सुबह 9:00 - शाम 8:00, रवि: सुबह 10:00 - शाम 6:00\n- सुविधाएं: मुफ्त पार्किंग, टेस्ट ड्राइव सुविधा, ग्राहक लाउंज\n\nब्रांच - इलेक्ट्रॉनिक सिटी:\n- पता: 456 होसुर रोड, इलेक्ट्रॉनिक सिटी - 560100\n- फोन: +91-9876543211\n- समय: सोम-शनि: सुबह 9:00 - शाम 8:00\n\nकैसे पहुंचें:\n- मेट्रो: MG रोड मेट्रो स्टेशन (2 मिनट पैदल)\n- बस: कई बस रूट उपलब्ध\n- कार: रिंग रोड से आसान पहुंच`,
+        kannada: `ನಾವು ನಿಮ್ಮನ್ನು ಸ್ವಾಗತಿಸಲು ಇಷ್ಟಪಡುತ್ತೇವೆ! ನಮ್ಮ ಸ್ಥಳಗಳು ಇಲ್ಲಿವೆ:\n\nಶೆರ್ಪಾ ಹುಂಡೈ ಸ್ಥಳಗಳು:\n\nಮುಖ್ಯ ಶೋರೂಮ್ - ಬೆಂಗಳೂರು:\n- ವಿಳಾಸ: 123 MG ರಸ್ತೆ, ಬೆಂಗಳೂರು - 560001\n- ಫೋನ್: +91-9876543210\n- ಸಮಯ: ಸೋಮ-ಶನಿ: ಬೆಳಿಗ್ಗೆ 9:00 - ಸಂಜೆ 8:00, ಭಾನು: ಬೆಳಿಗ್ಗೆ 10:00 - ಸಂಜೆ 6:00\n- ಸೌಕರ್ಯಗಳು: ಉಚಿತ ಪಾರ್ಕಿಂಗ್, ಟೆಸ್ಟ್ ಡ್ರೈವ್ ಸೌಕರ್ಯ, ಗ್ರಾಹಕ ಲೌಂಜ್\n\nಶಾಖೆ - ಎಲೆಕ್ಟ್ರಾನಿಕ್ ಸಿಟಿ:\n- ವಿಳಾಸ: 456 ಹೊಸೂರು ರಸ್ತೆ, ಎಲೆಕ್ಟ್ರಾನಿಕ್ ಸಿಟಿ - 560100\n- ಫೋನ್: +91-9876543211\n- ಸಮಯ: ಸೋಮ-ಶನಿ: ಬೆಳಿಗ್ಗೆ 9:00 - ಸಂಜೆ 8:00\n\nಹೇಗೆ ತಲುಪುವುದು:\n- ಮೆಟ್ರೋ: MG ರಸ್ತೆ ಮೆಟ್ರೋ ನಿಲ್ದಾಣ (2 ನಿಮಿಷ ನಡೆದು)\n- ಬಸ್: ಅನೇಕ ಬಸ್ ಮಾರ್ಗಗಳು ಲಭ್ಯ\n- ಕಾರ: ರಿಂಗ್ ರಸ್ತೆಯಿಂದ ಸುಲಭ ಪ್ರವೇಶ`,
+        marathi: `आम्ही तुमचे स्वागत करण्यात आनंद घेऊ! आमची ठिकाणे येथे आहेत:\n\nशेरपा हुंडई ठिकाणे:\n\nमुख्य शोरूम - बंगळूर:\n- पत्ता: 123 MG रोड, बंगळूर - 560001\n- फोन: +91-9876543210\n- वेळ: सोम-शनि: सकाळ 9:00 - संध्याकाळ 8:00, रवि: सकाळ 10:00 - संध्याकाळ 6:00\n- सुविधा: मोफत पार्किंग, टेस्ट ड्राइव सुविधा, ग्राहक लाउंज\n\nशाखा - इलेक्ट्रॉनिक सिटी:\n- पत्ता: 456 होसुर रोड, इलेक्ट्रॉनिक सिटी - 560100\n- फोन: +91-9876543211\n- वेळ: सोम-शनि: सकाळ 9:00 - संध्याकाळ 8:00\n\nकसे पोहोचायचे:\n- मेट्रो: MG रोड मेट्रो स्टेशन (2 मिनिटे चालत)\n- बस: अनेक बस मार्ग उपलब्ध\n- कार: रिंग रोड वरून सोपी प्रवेश`
+      };
+      
+      return showroomMessages[userLang] || showroomMessages.english;
     }
   }
 
@@ -317,9 +661,27 @@ export async function handleDeterministicFlows(userId, text) {
   }
 
   // Browse Used Cars entry — always ask budget first
-  if (['browse used cars', 'browse cars', 'used cars', '2'].includes(lower)) {
-    session.state = 'browse_budget'; session.data = session.data || {}; setSession(userId, session);
-    return "Great! What's your budget (maximum)?\nYou can type values like '12 lakhs', 'below 20 lakhs', or a number like 1200000.";
+  if (['browse used cars', 'browse cars', 'used cars', '2'].includes(lower) ||
+      lower.includes('second hand car') || lower.includes('used car') || lower.includes('pre-owned car') ||
+      lower.includes('second hand car dekhna') || lower.includes('used car chahiye') || lower.includes('pre-owned car dekh raha')) {
+    session.state = 'browse_budget'; 
+    session.data = session.data || {}; 
+    setSession(userId, session);
+    
+    // Check if input is Hinglish
+    const isHinglish = /[a-zA-Z]/.test(input) && /[हिंदीकन्नडमराठी]/.test(input) || 
+                       /(main|aap|hai|hain|chahta|chahti|hoon|hain|dekh|raha|rahi|tha|lagbhag|se|lakh|ke|beech|petrol|hi|chahiye|zaroor|pehle|dikha|dijiye|ji|theek|dhanyavaad|swagat|sir|aapka|madad|kar|sakta|kya|mann|koi|khaas|brand|ya|model|bahut|badhiya|chunaav|budget|kitna|range|hamare|paas|model|dono|uplabdh|variant|chahte|bilkul|test|drive|lena|chahenge|turant|gaadi|tayyar|karwata|waise|driving|license|aaiye|rahi|baad|emi|offer|poori|jankari|de|doonga)/i.test(input);
+    
+    const browseMessages = {
+      english: "Great! What's your budget (maximum)?\nYou can type values like '12 lakhs', 'below 20 lakhs', or a number like 1200000.",
+      hindi: isHinglish ? 
+        "Bahut badhiya! Aapka budget kitna hai (maximum)?\nAap values type kar sakte hain jaise '12 lakhs', 'below 20 lakhs', ya number jaise 1200000." :
+        "बहुत बढ़िया! आपका बजट क्या है (अधिकतम)?\nआप मान टाइप कर सकते हैं जैसे '12 लाख', '20 लाख से कम', या संख्या जैसे 1200000।",
+      kannada: "ಚೆನ್ನಾಗಿದೆ! ನಿಮ್ಮ ಬಜೆಟ್ ಎಷ್ಟು (ಗರಿಷ್ಠ)?\nನೀವು '12 ಲಕ್ಷ', '20 ಲಕ್ಷಕ್ಕಿಂತ ಕಡಿಮೆ', ಅಥವಾ 1200000 ನಂತಹ ಸಂಖ್ಯೆಯನ್ನು ಟೈಪ್ ಮಾಡಬಹುದು.",
+      marathi: "छान! तुमचा बजेट किती आहे (जास्तीत जास्त)?\nतुम्ही '12 लाख', '20 लाख खाली', किंवा 1200000 सारख्या संख्या टाइप करू शकता."
+    };
+    
+    return browseMessages[userLang] || browseMessages.english;
   }
 
   // If user says "all type(s)", show all body types (no type filter)
@@ -334,12 +696,49 @@ export async function handleDeterministicFlows(userId, text) {
       return 'Got it. Ill show all body types. Please type a brand (make), e.g., Toyota';
     }
   }
+  
+  // Handle "No" response to brand preference - show cars instead of ending conversation
+  if (session.state === 'browse_pick_make' && (lower.includes('no') || lower.includes('any') || lower.includes('all brands') || lower.includes('all type of brand'))) {
+    session.data.make = undefined; // Remove brand filter
+    session.state = 'browse_show_results';
+    setSession(userId, session);
+    
+    // Show results without brand filter
+    const { searchInventoryTool } = await import('./tools.js');
+    const { results } = await searchInventoryTool({ 
+      type: session.data.type, 
+      maxPrice: session.data.maxPrice,
+      minPrice: session.data.minPrice
+    });
+    
+    if (!results || results.length === 0) {
+      return 'No matches found. You can change type or budget.';
+    }
+    
+    session.state = 'browse_pick_vehicle';
+    session.data.vehicles = results.slice(0, 10);
+    setSession(userId, session);
+    
+    const trimTo = (s, n) => {
+      const str = String(s || '');
+      return str.length <= n ? str : str.slice(0, n - 1) + '…';
+    };
+    
+    const rows = session.data.vehicles.map(v => ({ 
+      id: `pick_vehicle:${v.id}`, 
+      title: trimTo(`${v.brand || v.make || ''} ${v.model || ''}`.trim(), 24), 
+      description: trimTo(`Yr ${v.year || 'NA'} • ${v.fuel_type || v.fuel || 'NA'} • ${(v.transmission||'').toString() || 'NA'} • ${(v.mileage||0).toLocaleString('en-IN')}km • ₹${(v.price||0).toLocaleString('en-IN')}`, 72) 
+    }));
+    
+    return { type: 'list', bodyText: 'Here are cars matching your criteria:', buttonText: 'Select', sections: [{ title: 'Results', rows }] };
+  }
 
   // Parse budget first, then proceed to filters
   if (session.state === 'browse_budget') {
-    const lakhs = input.match(/(\d+[\.]?\d*)\s*(lakh|lakhs|lak|laks)/i);
-    const below = /(under|below|upto|up to|less than)\s+(\d+[\.]?\d*)\s*(lakh|lakhs|lak|laks)/i.exec(lower);
-    const above = /(above|over|more than|greater than)\s+(\d+[\.]?\d*)\s*(lakh|lakhs|lak|laks)/i.exec(lower);
+    // Enhanced budget parsing for multiple languages
+    const lakhs = input.match(/(\d+[\.]?\d*)\s*(lakh|lakhs|lak|laks|लाख|ಲಕ್ಷ|लाख)/i);
+    const below = /(under|below|upto|up to|less than|से कम|ಕಡಿಮೆ|खाली|तक|ರೂಪಾಯಿಗಳವರೆಗೆ|रुपये तक|रुपये पर्यंत)\s+(\d+[\.]?\d*)\s*(lakh|lakhs|lak|laks|लाख|ಲಕ್ಷ|लाख)/i.exec(lower);
+    const above = /(above|over|more than|greater than|से अधिक|ಹೆಚ್ಚು|वर|से ऊपर|ರೂಪಾಯಿಗಳಿಗಿಂತ ಹೆಚ್ಚು|रुपये से अधिक|रुपये वर)/i.exec(lower);
     const numeric = input.replace(/[,₹\s]/g, '').match(/(\d{5,12})/);
     let maxVal = null;
     let minVal = null;
@@ -350,7 +749,13 @@ export async function handleDeterministicFlows(userId, text) {
     else if (numeric) maxVal = Number(numeric[1]);
 
     if (!maxVal && !minVal) {
-      return "Please share a budget like '12 lakhs', 'below 20 lakhs', 'above 15 lakhs', or a number (e.g., 1200000).";
+      const budgetErrorMessages = {
+        english: "Please share a budget like '12 lakhs', 'below 20 lakhs', 'above 15 lakhs', or a number (e.g., 1200000).",
+        hindi: "कृपया बजट बताएं जैसे '12 लाख', '20 लाख से कम', '15 लाख से अधिक', या संख्या (जैसे 1200000)।",
+        kannada: "ದಯವಿಟ್ಟು ಬಜೆಟ್ ಹಂಚಿಕೊಳ್ಳಿ '12 ಲಕ್ಷ', '20 ಲಕ್ಷಕ್ಕಿಂತ ಕಡಿಮೆ', '15 ಲಕ್ಷಕ್ಕಿಂತ ಹೆಚ್ಚು', ಅಥವಾ ಸಂಖ್ಯೆ (ಉದಾ 1200000)।",
+        marathi: "कृपया बजेट सांगा जसे '12 लाख', '20 लाख खाली', '15 लाख वर', किंवा संख्या (जसे 1200000)।"
+      };
+      return budgetErrorMessages[userLang] || budgetErrorMessages.english;
     }
 
     session.data.maxPrice = maxVal; 
@@ -362,10 +767,28 @@ export async function handleDeterministicFlows(userId, text) {
         const { listMakesTool } = await import('./tools.js');
         const { makes = [] } = await listMakesTool();
         const budgetText = maxVal ? `up to ₹${maxVal.toLocaleString('en-IN')}` : `above ₹${minVal.toLocaleString('en-IN')}`;
-        return `Got it. Budget ${budgetText}\nSelect a brand (${session.data.type}): ${makes.slice(0,30).join(' | ')}`;
+        
+        const brandMessages = {
+          english: `Got it. Budget ${budgetText}\nSelect a brand (${session.data.type}): ${makes.slice(0,30).join(' | ')}`,
+          hinglish: `Samajh gaya. Budget ${budgetText}\nBrand choose karein (${session.data.type}): ${makes.slice(0,30).join(' | ')}`,
+          hindi: `ठीक है। बजट ${budgetText}\nब्रांड चुनें (${session.data.type}): ${makes.slice(0,30).join(' | ')}`,
+          kannada: `ಸರಿ. ಬಜೆಟ್ ${budgetText}\nಬ್ರಾಂಡ್ ಆಯ್ಕೆಮಾಡಿ (${session.data.type}): ${makes.slice(0,30).join(' | ')}`,
+          marathi: `ठीक आहे. बजेट ${budgetText}\nब्रँड निवडा (${session.data.type}): ${makes.slice(0,30).join(' | ')}`
+        };
+        
+        return brandMessages[userLang] || brandMessages.english;
       } catch (_) {
         const budgetText = maxVal ? `up to ₹${maxVal.toLocaleString('en-IN')}` : `above ₹${minVal.toLocaleString('en-IN')}`;
-        return `Got it. Budget ${budgetText}\nPlease type a brand (make), e.g., Toyota`;
+        
+        const brandMessages = {
+          english: `Got it. Budget ${budgetText}\nPlease type a brand (make), e.g., Toyota`,
+          hinglish: `Samajh gaya. Budget ${budgetText}\nKripya brand (make) type karein, jaise Toyota`,
+          hindi: `ठीक है। बजट ${budgetText}\nकृपया ब्रांड टाइप करें, जैसे Toyota`,
+          kannada: `ಸರಿ. ಬಜೆಟ್ ${budgetText}\nದಯವಿಟ್ಟು ಬ್ರಾಂಡ್ ಟೈಪ್ ಮಾಡಿ, ಉದಾ Toyota`,
+          marathi: `ठीक आहे. बजेट ${budgetText}\nकृपया ब्रँड टाइप करा, जसे Toyota`
+        };
+        
+        return brandMessages[userLang] || brandMessages.english;
       }
     }
     session.state = 'browse_pick_type'; setSession(userId, session);
@@ -373,23 +796,55 @@ export async function handleDeterministicFlows(userId, text) {
       const { listTypesTool } = await import('./tools.js');
       const { types = [] } = await listTypesTool();
       const typeList = types.length > 0 ? types.join(' | ') : 'Hatchback | Sedan | SUV | MPV';
-      return `Got it. Budget up to ₹${maxVal.toLocaleString('en-IN')}.\nPick a body type: ${typeList}`;
+      
+      const typeMessages = {
+        english: `Got it. Budget up to ₹${maxVal.toLocaleString('en-IN')}.\nPick a body type: ${typeList}\nOr type "any type" to see all types.`,
+        hinglish: `Samajh gaya. Budget up to ₹${maxVal.toLocaleString('en-IN')}.\nBody type choose karein: ${typeList}\nYa "any type" type karein sabhi types ke liye.`,
+        hindi: `ठीक है। बजट ₹${maxVal.toLocaleString('en-IN')} तक।\nकार का प्रकार चुनें: ${typeList}`,
+        kannada: `ಸರಿ. ಬಜೆಟ್ ₹${maxVal.toLocaleString('en-IN')} ವರೆಗೆ.\nಕಾರಿನ ಪ್ರಕಾರ ಆಯ್ಕೆಮಾಡಿ: ${typeList}`,
+        marathi: `ठीक आहे. बजेट ₹${maxVal.toLocaleString('en-IN')} पर्यंत.\nकारचा प्रकार निवडा: ${typeList}`
+      };
+      
+      return typeMessages[userLang] || typeMessages.english;
     } catch (_) {
-      return `Got it. Budget up to ₹${maxVal.toLocaleString('en-IN')}.\nPick a body type: Hatchback | Sedan | SUV | MPV`;
+      const typeMessages = {
+        english: `Got it. Budget up to ₹${maxVal.toLocaleString('en-IN')}.\nPick a body type: Hatchback | Sedan | SUV | MPV\nOr type "any type" to see all types.`,
+        hinglish: `Samajh gaya. Budget up to ₹${maxVal.toLocaleString('en-IN')}.\nBody type choose karein: Hatchback | Sedan | SUV | MPV\nYa "any type" type karein sabhi types ke liye.`,
+        hindi: `ठीक है। बजट ₹${maxVal.toLocaleString('en-IN')} तक।\nकार का प्रकार चुनें: Hatchback | Sedan | SUV | MPV`,
+        kannada: `ಸರಿ. ಬಜೆಟ್ ₹${maxVal.toLocaleString('en-IN')} ವರೆಗೆ.\nಕಾರಿನ ಪ್ರಕಾರ ಆಯ್ಕೆಮಾಡಿ: Hatchback | Sedan | SUV | MPV`,
+        marathi: `ठीक आहे. बजेट ₹${maxVal.toLocaleString('en-IN')} पर्यंत.\nकारचा प्रकार निवडा: Hatchback | Sedan | SUV | MPV`
+      };
+      
+      return typeMessages[userLang] || typeMessages.english;
     }
   }
 
   // Handle type selection
   if (session.state === 'browse_pick_type') {
+    // Check if user wants all types
+    if (/^(any|all|any type|all type|any types|all types)$/i.test(lower.trim())) {
+      // Skip type filter and move to brand selection
+      session.data.type = null; // Clear type to show all types
+      session.state = 'browse_pick_make';
+      setSession(userId, session);
+      try {
+        const { listMakesTool } = await import('./tools.js');
+        const { makes = [] } = await listMakesTool();
+        return `Great! Showing all types. Select a brand: ${makes.slice(0,30).join(' | ')}`;
+      } catch (_) {
+        return 'Great! Showing all types. Please type a brand (make), e.g., Toyota';
+      }
+    }
+    
     const type = extractType();
     if (!type) {
       try {
         const { listTypesTool } = await import('./tools.js');
         const { types = [] } = await listTypesTool();
         const typeList = types.length > 0 ? types.join(' | ') : 'Hatchback | Sedan | SUV | MPV';
-        return `Please pick a body type: ${typeList}`;
+        return `Please pick a body type: ${typeList}\nOr type "any type" to see all types.`;
       } catch (_) {
-        return 'Please pick a body type: Hatchback | Sedan | SUV | MPV';
+        return 'Please pick a body type: Hatchback | Sedan | SUV | MPV\nOr type "any type" to see all types.';
       }
     }
     session.data.type = type;
@@ -408,10 +863,11 @@ export async function handleDeterministicFlows(userId, text) {
       }
       session.state = 'browse_pick_vehicle';
       session.data.vehicles = results.slice(0, 10);
+      session.data.carsShown = 0; // Initialize cars shown counter
       setSession(userId, session);
       // Use enhanced formatting from tools
       const { formatMultipleCars } = await import('./tools.js');
-      const enhancedFormat = formatMultipleCars(session.data.vehicles);
+      const enhancedFormat = formatMultipleCars(session.data.vehicles, 0);
       return enhancedFormat;
     }
     // Else ask for brand selection
@@ -420,20 +876,66 @@ export async function handleDeterministicFlows(userId, text) {
     try {
       const { listMakesTool } = await import('./tools.js');
       const { makes = [] } = await listMakesTool();
-      return `Great! ${type} it is. Select a brand: ${makes.slice(0,30).join(' | ')}`;
+      const typeMessage = type ? `${type} it is.` : 'Showing all types.';
+      return `Great! ${typeMessage} Select a brand: ${makes.slice(0,30).join(' | ')}\nOr type "any brand" to see all brands.`;
     } catch (_) {
-      return `Great! ${type} it is. Please type a brand (make), e.g., Toyota`;
+      const typeMessage = type ? `${type} it is.` : 'Showing all types.';
+      return `Great! ${typeMessage} Please type a brand (make), e.g., Toyota. Or type "any brand" to see all brands.`;
     }
   }
 
-  // Handle make selection
+  // Handle make selection with improved brand mapping
   if (session.state === 'browse_pick_make') {
     try {
       const { listMakesTool } = await import('./tools.js');
       const { makes = [] } = await listMakesTool();
-      const found = makes.find(m => lower.includes(String(m).toLowerCase()));
+      
+      // Check if user wants all brands
+      if (/^(any|all|any brand|all brand|any brands|all brands)$/i.test(lower.trim())) {
+        // Skip brand filter and proceed to show results
+        session.data.make = null; // Clear brand to show all brands
+        session.state = 'browse_show_results';
+        setSession(userId, session);
+        const { searchInventoryTool } = await import('./tools.js');
+        const { results } = await searchInventoryTool({ 
+          make: null, 
+          type: session.data.type, 
+          maxPrice: session.data.maxPrice,
+          minPrice: session.data.minPrice
+        });
+        if (!results || results.length === 0) {
+          return 'No matches found. You can change filters or budget.';
+        }
+        session.state = 'browse_pick_vehicle';
+        session.data.vehicles = results.slice(0, 10);
+        session.data.carsShown = 0; // Initialize cars shown counter
+        setSession(userId, session);
+        const { formatMultipleCars } = await import('./tools.js');
+        const enhancedFormat = formatMultipleCars(session.data.vehicles, 0);
+        return `Great! Showing all brands. ${enhancedFormat}`;
+      }
+      
+      // Use enhanced brand extraction for better matching
+      const brand = extractBrand();
+      let found = null;
+      
+      if (brand) {
+        // Try to find exact match first
+        found = makes.find(m => String(m).toLowerCase() === brand.toLowerCase());
+        
+        // If not found, try partial match
+        if (!found) {
+          found = makes.find(m => String(m).toLowerCase().includes(brand.toLowerCase()) || brand.toLowerCase().includes(String(m).toLowerCase()));
+        }
+      }
+      
+      // Fallback to original logic
       if (!found) {
-        return `Please select a valid brand: ${makes.slice(0,30).join(' | ')}`;
+        found = makes.find(m => lower.includes(String(m).toLowerCase()));
+      }
+      
+      if (!found) {
+        return `Please select a valid brand: ${makes.slice(0,30).join(' | ')}\nOr type "any brand" to see all brands.`;
       }
       session.data.make = found;
       session.state = 'browse_show_results';
@@ -452,13 +954,14 @@ export async function handleDeterministicFlows(userId, text) {
       }
       session.state = 'browse_pick_vehicle';
       session.data.vehicles = results.slice(0, 10);
+      session.data.carsShown = 0; // Initialize cars shown counter
       setSession(userId, session);
       // Use enhanced formatting from tools
       const { formatMultipleCars } = await import('./tools.js');
-      const enhancedFormat = formatMultipleCars(session.data.vehicles);
+      const enhancedFormat = formatMultipleCars(session.data.vehicles, 0);
       return enhancedFormat;
     } catch (_) {
-      return 'Please type a brand (make), e.g., Toyota';
+      return 'Please type a brand (make), e.g., Toyota. Or type "any brand" to see all brands.';
     }
   }
 
@@ -477,8 +980,20 @@ export async function handleDeterministicFlows(userId, text) {
     
     // Handle "show more" request
     if (lower.includes('show more') || lower.includes('more cars')) {
+      // Track how many cars have been shown so far
+      const carsShown = session.data?.carsShown || 5; // Start at 5 since initial display shows 5
+      
+      if (carsShown >= vehicles.length) {
+        return 'No more cars to show. Please select a car from the list above or start a new search.';
+      }
+      
+      // Update the count of shown cars before showing
+      session.data.carsShown = carsShown + 5;
+      setSession(userId, session);
+      
       const { formatMultipleCars } = await import('./tools.js');
-      return formatMultipleCars(vehicles);
+      // Pass all vehicles and startIndex to formatMultipleCars
+      return formatMultipleCars(vehicles, carsShown);
     }
     
     let chosen = null;
@@ -489,13 +1004,25 @@ export async function handleDeterministicFlows(userId, text) {
       chosen = vehicles.find(v => String(v.id) === String(id));
     }
     
-    // Method 2: Car selection (car1, car2, car3, etc.)
-    else if (lower.startsWith('car') && /^\d+$/.test(input.trim().substring(3))) {
-      const index = parseInt(input.trim().substring(3)) - 1;
+    // Method 2: Car selection (car1, car2, car3, etc.) - handle spaces
+    else if (lower.startsWith('car') && /^\d+$/.test(input.trim().substring(3).trim())) {
+      const index = parseInt(input.trim().substring(3).trim()) - 1;
       if (index >= 0 && index < vehicles.length) {
         chosen = vehicles[index];
       } else {
         return `Please select a valid car (car1-car${vehicles.length}). Type car1, car2, car3, etc. or "show more" to see additional cars`;
+      }
+    }
+    // Method 2b: Car selection with spaces (car 1, car 2, car 3, etc.)
+    else if (lower.includes('car') && /\d+/.test(input)) {
+      const numberMatch = input.match(/car\s*(\d+)/i);
+      if (numberMatch) {
+        const index = parseInt(numberMatch[1]) - 1;
+        if (index >= 0 && index < vehicles.length) {
+          chosen = vehicles[index];
+        } else {
+          return `Please select a valid car (car1-car${vehicles.length}). Type car1, car2, car3, etc. or "show more" to see additional cars`;
+        }
       }
     }
     
@@ -626,10 +1153,29 @@ export async function handleDeterministicFlows(userId, text) {
     return `🎉 **Test Drive Confirmed!**\n\n📋 **Booking Details:**\n• **Car:** ${carName}\n• **Customer:** ${session.data.customerName}\n• **Phone:** ${session.data.customerPhone}\n• **Location:** ${location}\n• **Confirmation ID:** ${confirmationId}\n• **Date:** Tomorrow (11:00 AM - 12:00 PM)\n\n✅ **You'll receive a confirmation message shortly!**\n\nIs there anything else I can help you with?`;
   }
 
-  // Test Drive Booking entry
-  if (['book test drive', 'test drive', 'book a test drive', 'schedule test drive'].includes(lower) || lower.includes('book test drive') || lower.includes('test drive for')) {
-    session.state = 'testdrive_car'; session.data = {}; setSession(userId, session);
-    return 'Great! I\'ll help you book a test drive. Which car are you interested in? Please mention the car name (e.g., "Tata Nexon", "Honda City", "Hyundai Creta").';
+  // Enhanced Test Drive Booking entry with multilingual support
+  if (['book test drive', 'test drive', 'book a test drive', 'schedule test drive'].includes(lower) || 
+      lower.includes('book test drive') || lower.includes('test drive for') || 
+      lower.includes('टेस्ट ड्राइव') || lower.includes('test drive lena') || 
+      lower.includes('test drive book') || lower.includes('ड्राइव लेना')) {
+    session.state = 'testdrive_car'; 
+    session.data = {}; 
+    setSession(userId, session);
+    
+    // Check if input is Hinglish
+    const isHinglish = /[a-zA-Z]/.test(input) && /[हिंदीकन्नडमराठी]/.test(input) || 
+                       /(main|aap|hai|hain|chahta|chahti|hoon|hain|dekh|raha|rahi|tha|lagbhag|se|lakh|ke|beech|petrol|hi|chahiye|zaroor|pehle|dikha|dijiye|ji|theek|dhanyavaad|swagat|sir|aapka|madad|kar|sakta|kya|mann|koi|khaas|brand|ya|model|bahut|badhiya|chunaav|budget|kitna|range|hamare|paas|model|dono|uplabdh|variant|chahte|bilkul|test|drive|lena|chahenge|turant|gaadi|tayyar|karwata|waise|driving|license|aaiye|rahi|baad|emi|offer|poori|jankari|de|doonga)/i.test(input);
+    
+    const testDriveMessages = {
+      english: 'Great! I\'ll help you book a test drive. Which car are you interested in? Please mention the car name (e.g., "Tata Nexon", "Honda City", "Hyundai Creta").',
+      hindi: isHinglish ? 
+        'Bahut badhiya! Main aapke liye test drive book karne mein madad karunga. Aap kaun si car mein ruchi rakhte hain? Kripya car ka naam batayein (jaise, "Tata Nexon", "Honda City", "Hyundai Creta").' :
+        'बहुत बढ़िया! मैं आपके लिए टेस्ट ड्राइव बुक करने में मदद करूंगा। आप कौन सी कार में रुचि रखते हैं? कृपया कार का नाम बताएं (जैसे, "टाटा नेक्सन", "होंडा सिटी", "हुंडई क्रेटा")।',
+      kannada: 'ಚೆನ್ನಾಗಿದೆ! ನಿಮಗಾಗಿ ಟೆಸ್ಟ್ ಡ್ರೈವ್ ಬುಕ್ ಮಾಡಲು ನಾನು ಸಹಾಯ ಮಾಡುತ್ತೇನೆ. ನೀವು ಯಾವ ಕಾರಿನಲ್ಲಿ ಆಸಕ್ತಿ ಹೊಂದಿದ್ದೀರಿ? ದಯವಿಟ್ಟು ಕಾರಿನ ಹೆಸರನ್ನು ಹೇಳಿ (ಉದಾ, "ಟಾಟಾ ನೆಕ್ಸನ್", "ಹೋಂಡಾ ಸಿಟಿ", "ಹುಂಡೈ ಕ್ರೆಟಾ").',
+      marathi: 'छान! मी तुमच्यासाठी टेस्ट ड्राइव बुक करण्यात मदत करेन. तुम्हाला कोणत्या कारमध्ये रस आहे? कृपया कारचे नाव सांगा (जसे, "टाटा नेक्सन", "होंडा सिटी", "हुंडई क्रेटा").'
+    };
+    
+    return testDriveMessages[userLang] || testDriveMessages.english;
   }
 
   // Test Drive Management entries
@@ -697,10 +1243,53 @@ Please choose a date or type "custom" for a specific date.`;
     }
   }
 
+  // Enhanced EMI/Financing flow with multilingual support
+  if (['emi', 'financing', 'loan', 'car loan', 'emi options', 'financing options', 'loan options'].includes(lower) ||
+      lower.includes('emi') || lower.includes('loan') || lower.includes('financing') || 
+      lower.includes('कर्ज') || lower.includes('लोन') || lower.includes('EMI') ||
+      lower.includes('emi janna') || lower.includes('loan chahiye') || lower.includes('financing options')) {
+    session.state = 'financing_inquiry';
+    session.data = {};
+    setSession(userId, session);
+    
+    // Check if input is Hinglish
+    const isHinglish = /[a-zA-Z]/.test(input) && /[हिंदीकन्नडमराठी]/.test(input) || 
+                       /(main|aap|hai|hain|chahta|chahti|hoon|hain|dekh|raha|rahi|tha|lagbhag|se|lakh|ke|beech|petrol|hi|chahiye|zaroor|pehle|dikha|dijiye|ji|theek|dhanyavaad|swagat|sir|aapka|madad|kar|sakta|kya|mann|koi|khaas|brand|ya|model|bahut|badhiya|chunaav|budget|kitna|range|hamare|paas|model|dono|uplabdh|variant|chahte|bilkul|test|drive|lena|chahenge|turant|gaadi|tayyar|karwata|waise|driving|license|aaiye|rahi|baad|emi|offer|poori|jankari|de|doonga)/i.test(input);
+    
+    const financingMessages = {
+      english: `Great! I'll help you with financing options. Please provide:\n\n**Car Details:**\n• Car Model: (e.g., Hyundai i20, Maruti Swift)\n• Car Price: (e.g., ₹8,00,000)\n• Down Payment: (e.g., ₹2,00,000)\n• Loan Tenure: (e.g., 3, 4, 5 years)\n\n**Your Details:**\n• Monthly Income: (e.g., ₹50,000)\n• Employment Type: (Salaried/Self-employed)\n\nPlease share all details in one message.`,
+      hindi: isHinglish ? 
+        `Bahut badhiya! Main aapko financing options mein madad karunga. Kripya ye details dein:\n\n**Car ki jaankari:**\n• Car Model: (jaise, Hyundai i20, Maruti Swift)\n• Car Price: (jaise, ₹8,00,000)\n• Down Payment: (jaise, ₹2,00,000)\n• Loan Tenure: (jaise, 3, 4, 5 saal)\n\n**Aapki jaankari:**\n• Monthly Income: (jaise, ₹50,000)\n• Employment Type: (Salaried/Self-employed)\n\nKripya saari jaankari ek saath bhejein.` :
+        `बहुत बढ़िया! मैं आपको फाइनेंसिंग ऑप्शन्स में मदद करूंगा। कृपया जानकारी दें:\n\n**कार की जानकारी:**\n• कार मॉडल: (जैसे, हुंडई i20, मारुति स्विफ्ट)\n• कार की कीमत: (जैसे, ₹8,00,000)\n• डाउन पेमेंट: (जैसे, ₹2,00,000)\n• लोन टेन्योर: (जैसे, 3, 4, 5 साल)\n\n**आपकी जानकारी:**\n• मासिक आय: (जैसे, ₹50,000)\n• रोजगार का प्रकार: (सैलरीड/सेल्फ एम्प्लॉयड)\n\nकृपया सभी जानकारी एक साथ भेजें।`,
+      kannada: `ಚೆನ್ನಾಗಿದೆ! ನಾನು ನಿಮಗೆ ಹಣಕಾಸು ಆಯ್ಕೆಗಳಲ್ಲಿ ಸಹಾಯ ಮಾಡುತ್ತೇನೆ. ದಯವಿಟ್ಟು ಒದಗಿಸಿ:\n\n**ಕಾರಿನ ವಿವರಗಳು:**\n• ಕಾರ್ ಮಾಡೆಲ್: (ಉದಾ, ಹುಂಡೈ i20, ಮಾರುತಿ ಸ್ವಿಫ್ಟ್)\n• ಕಾರ್ ಬೆಲೆ: (ಉದಾ, ₹8,00,000)\n• ಡೌನ್ ಪೇಮೆಂಟ್: (ಉದಾ, ₹2,00,000)\n• ಲೋನ್ ಅವಧಿ: (ಉದಾ, 3, 4, 5 ವರ್ಷಗಳು)\n\n**ನಿಮ್ಮ ವಿವರಗಳು:**\n• ಮಾಸಿಕ ಆದಾಯ: (ಉದಾ, ₹50,000)\n• ಉದ್ಯೋಗದ ಪ್ರಕಾರ: (ಸಂಬಳ/ಸ್ವ-ಉದ್ಯೋಗಿ)\n\nದಯವಿಟ್ಟು ಎಲ್ಲಾ ವಿವರಗಳನ್ನು ಒಂದೇ ಸಂದೇಶದಲ್ಲಿ ಹಂಚಿಕೊಳ್ಳಿ.`,
+      marathi: `छान! मी तुम्हाला फायनान्सिंग ऑप्शन्समध्ये मदत करेन. कृपया माहिती द्या:\n\n**गाडीची माहिती:**\n• गाडीचे मॉडेल: (जसे, हुंडई i20, मारुती स्विफ्ट)\n• गाडीची किंमत: (जसे, ₹8,00,000)\n• डाउन पेमेंट: (जसे, ₹2,00,000)\n• लोन टेन्योर: (जसे, 3, 4, 5 वर्षे)\n\n**तुमची माहिती:**\n• मासिक उत्पन्न: (जसे, ₹50,000)\n• रोजगाराचा प्रकार: (पगारी/स्व-रोजगारी)\n\nकृपया सर्व माहिती एकाच संदेशात सांगा.`
+    };
+    
+    return financingMessages[userLang] || financingMessages.english;
+  }
+
   // Car Valuation entry
-  if (['get car valuation', 'valuation', 'car valuation'].includes(lower)) {
-    session.state = 'valuation_collect'; session.data = {}; setSession(userId, session);
-    return 'To estimate your car value, please share:\nMake: \nModel: \nYear: \nKilometers: \nCondition (excellent/good/fair): \nCity:';
+  if (['get car valuation', 'valuation', 'car valuation'].includes(lower) ||
+      lower.includes('car valuation') || lower.includes('car ka price') || lower.includes('gaadi ka value') ||
+      lower.includes('car valuation karva') || lower.includes('car ka price kitna') || lower.includes('gaadi ka value janna')) {
+    session.state = 'valuation_collect'; 
+    session.data = {}; 
+    setSession(userId, session);
+    
+    // Check if input is Hinglish
+    const isHinglish = /[a-zA-Z]/.test(input) && /[हिंदीकन्नडमराठी]/.test(input) || 
+                       /(main|aap|hai|hain|chahta|chahti|hoon|hain|dekh|raha|rahi|tha|lagbhag|se|lakh|ke|beech|petrol|hi|chahiye|zaroor|pehle|dikha|dijiye|ji|theek|dhanyavaad|swagat|sir|aapka|madad|kar|sakta|kya|mann|koi|khaas|brand|ya|model|bahut|badhiya|chunaav|budget|kitna|range|hamare|paas|model|dono|uplabdh|variant|chahte|bilkul|test|drive|lena|chahenge|turant|gaadi|tayyar|karwata|waise|driving|license|aaiye|rahi|baad|emi|offer|poori|jankari|de|doonga)/i.test(input);
+    
+    const valuationMessages = {
+      english: 'To estimate your car value, please share:\nMake: \nModel: \nYear: \nKilometers: \nCondition (excellent/good/fair): \nCity:',
+      hindi: isHinglish ? 
+        'Aapki car ka value estimate karne ke liye, kripya ye details share karein:\nMake: \nModel: \nYear: \nKilometers: \nCondition (excellent/good/fair): \nCity:' :
+        'आपकी कार का मूल्य अनुमान लगाने के लिए, कृपया ये विवरण साझा करें:\nMake: \nModel: \nYear: \nKilometers: \nCondition (excellent/good/fair): \nCity:',
+      kannada: 'ನಿಮ್ಮ ಕಾರಿನ ಮೌಲ್ಯವನ್ನು ಅಂದಾಜು ಮಾಡಲು, ದಯವಿಟ್ಟು ಹಂಚಿಕೊಳ್ಳಿ:\nMake: \nModel: \nYear: \nKilometers: \nCondition (excellent/good/fair): \nCity:',
+      marathi: 'तुमच्या गाडीचे मूल्य अंदाज लावण्यासाठी, कृपया ही माहिती सामायिक करा:\nMake: \nModel: \nYear: \nKilometers: \nCondition (excellent/good/fair): \nCity:'
+    };
+    
+    return valuationMessages[userLang] || valuationMessages.english;
   }
 
   // Test Drive Booking Flow
@@ -986,6 +1575,52 @@ Thank you for choosing AutoSherpa Motors! 🚗`;
     }
   }
 
+  // Enhanced service booking completion handler
+  if (session.state === 'service_booking') {
+    const makeMatch = input.match(/make\s*:\s*(.*)/i) || input.match(/brand\s*:\s*(.*)/i) || input.match(/ब्रांड\s*:\s*(.*)/i);
+    const modelMatch = input.match(/model\s*:\s*(.*)/i) || input.match(/मॉडल\s*:\s*(.*)/i);
+    const yearMatch = input.match(/year\s*:\s*(\d{4})/i) || input.match(/साल\s*:\s*(\d{4})/i);
+    const regMatch = input.match(/registration\s*(?:number)?\s*:\s*([A-Z]{2}\d{2}[A-Z]{2}\d{4})/i);
+    const serviceMatch = input.match(/service\s*(?:type)?\s*:\s*(.*)/i) || input.match(/सर्विस\s*:\s*(.*)/i);
+    
+    if (makeMatch) session.data.make = makeMatch[1].trim();
+    if (modelMatch) session.data.model = modelMatch[1].trim();
+    if (yearMatch) session.data.year = yearMatch[1];
+    if (regMatch) session.data.registration = regMatch[1];
+    if (serviceMatch) session.data.serviceType = serviceMatch[1].trim();
+    
+    // Check if we have all required details
+    if (!session.data.make || !session.data.model || !session.data.year || !session.data.serviceType) {
+      setSession(userId, session);
+      
+      const errorMessages = {
+        english: 'Please provide all required details:\n\n**Vehicle Details:**\n• Make: (e.g., Hyundai, Maruti, Honda)\n• Model: (e.g., i20, Swift, City)\n• Year: (e.g., 2020, 2021)\n• Registration Number: (e.g., KA01AB1234)\n\n**Service Type:**\n• Regular Service\n• Major Service\n• Accident Repair\n• Insurance Claim\n• Other (please specify)',
+        hindi: 'कृपया सभी आवश्यक जानकारी दें:\n\n**गाड़ी की जानकारी:**\n• ब्रांड: (जैसे, हुंडई, मारुति, होंडा)\n• मॉडल: (जैसे, i20, स्विफ्ट, सिटी)\n• साल: (जैसे, 2020, 2021)\n• रजिस्ट्रेशन नंबर: (जैसे, KA01AB1234)\n\n**सर्विस का प्रकार:**\n• रेगुलर सर्विस\n• मेजर सर्विस\n• एक्सीडेंट रिपेयर\n• इंश्योरेंस क्लेम\n• अन्य (कृपया बताएं)',
+        kannada: 'ದಯವಿಟ್ಟು ಎಲ್ಲಾ ಅಗತ್ಯ ವಿವರಗಳನ್ನು ಒದಗಿಸಿ:\n\n**ವಾಹನದ ವಿವರಗಳು:**\n• ಮೇಕ್: (ಉದಾ, ಹುಂಡೈ, ಮಾರುತಿ, ಹೋಂಡಾ)\n• ಮಾಡೆಲ್: (ಉದಾ, i20, ಸ್ವಿಫ್ಟ್, ಸಿಟಿ)\n• ವರ್ಷ: (ಉದಾ, 2020, 2021)\n• ನೋಂದಣಿ ಸಂಖ್ಯೆ: (ಉದಾ, KA01AB1234)\n\n**ಸೇವೆಯ ಪ್ರಕಾರ:**\n• ನಿಯಮಿತ ಸೇವೆ\n• ಪ್ರಮುಖ ಸೇವೆ\n• ಅಪಘಾತ ದುರಸ್ತಿ\n• ವಿಮೆ ಹಕ್ಕು\n• ಇತರೆ (ದಯವಿಟ್ಟು ನಿರ್ದಿಷ್ಟಪಡಿಸಿ)',
+        marathi: 'कृपया सर्व आवश्यक माहिती द्या:\n\n**गाडीची माहिती:**\n• ब्रँड: (जसे, हुंडई, मारुती, होंडा)\n• मॉडेल: (जसे, i20, स्विफ्ट, सिटी)\n• वर्ष: (जसे, 2020, 2021)\n• नोंदणी क्रमांक: (जसे, KA01AB1234)\n\n**सर्विसचा प्रकार:**\n• नियमित सर्विस\n• मुख्य सर्विस\n• अपघात दुरुस्ती\n• विमा दावा\n• इतर (कृपया सांगा)'
+      };
+      
+      return errorMessages[userLang] || errorMessages.english;
+    }
+    
+    // Generate service booking confirmation
+    const bookingId = `SB-${Date.now().toString().slice(-6)}`;
+    const today = new Date();
+    const tomorrow = new Date(today.getTime() + 24 * 60 * 60 * 1000);
+    
+    const confirmationMessages = {
+      english: `🔧 **SERVICE BOOKING CONFIRMED!**\n\n📋 **Booking Details:**\n• **Booking ID:** ${bookingId}\n• **Vehicle:** ${session.data.make} ${session.data.model} (${session.data.year})\n• **Registration:** ${session.data.registration || 'Not provided'}\n• **Service Type:** ${session.data.serviceType}\n• **Preferred Date:** Tomorrow (${tomorrow.toLocaleDateString('en-IN')})\n• **Time Slot:** 10:00 AM - 12:00 PM\n\n📍 **Service Center:**\n• **Main Service Center** - MG Road, Bangalore\n• **Address:** 123 MG Road, Bangalore - 560001\n• **Phone:** +91-9876543210\n\n📞 **Next Steps:**\n• Our service team will call you within 2 hours to confirm\n• Please bring your vehicle RC, insurance papers, and service history\n• Free pickup/drop available within 20km\n• Service duration: 2-4 hours (depending on service type)\n\n**Contact:** +91-9876543210 for any changes\n\nThank you for choosing Sherpa Hyundai Service! 🚗`,
+      hindi: `🔧 **सर्विस बुकिंग कन्फर्म!**\n\n📋 **बुकिंग की जानकारी:**\n• **बुकिंग आईडी:** ${bookingId}\n• **गाड़ी:** ${session.data.make} ${session.data.model} (${session.data.year})\n• **रजिस्ट्रेशन:** ${session.data.registration || 'नहीं दिया गया'}\n• **सर्विस का प्रकार:** ${session.data.serviceType}\n• **पसंदीदा तारीख:** कल (${tomorrow.toLocaleDateString('en-IN')})\n• **समय:** 10:00 AM - 12:00 PM\n\n📍 **सर्विस सेंटर:**\n• **मुख्य सर्विस सेंटर** - MG रोड, बैंगलोर\n• **पता:** 123 MG रोड, बैंगलोर - 560001\n• **फोन:** +91-9876543210\n\n📞 **अगले कदम:**\n• हमारी सर्विस टीम 2 घंटे में कॉन्फर्म करने के लिए कॉल करेगी\n• कृपया अपनी गाड़ी का RC, इंश्योरेंस पेपर्स और सर्विस हिस्ट्री लाएं\n• 20km के अंदर मुफ्त पिकअप/ड्रॉप उपलब्ध\n• सर्विस की अवधि: 2-4 घंटे (सर्विस के प्रकार के अनुसार)\n\n**संपर्क:** कोई बदलाव के लिए +91-9876543210\n\nशेरपा हुंडई सर्विस चुनने के लिए धन्यवाद! 🚗`,
+      kannada: `🔧 **ಸೇವೆ ಬುಕಿಂಗ್ ದೃಢೀಕರಿಸಲಾಗಿದೆ!**\n\n📋 **ಬುಕಿಂಗ್ ವಿವರಗಳು:**\n• **ಬುಕಿಂಗ್ ID:** ${bookingId}\n• **ವಾಹನ:** ${session.data.make} ${session.data.model} (${session.data.year})\n• **ನೋಂದಣಿ:** ${session.data.registration || 'ಒದಗಿಸಲಾಗಿಲ್ಲ'}\n• **ಸೇವೆಯ ಪ್ರಕಾರ:** ${session.data.serviceType}\n• **ಆದ್ಯತೆಯ ದಿನಾಂಕ:** ನಾಳೆ (${tomorrow.toLocaleDateString('en-IN')})\n• **ಸಮಯ:** 10:00 AM - 12:00 PM\n\n📍 **ಸೇವಾ ಕೇಂದ್ರ:**\n• **ಮುಖ್ಯ ಸೇವಾ ಕೇಂದ್ರ** - MG ರಸ್ತೆ, ಬೆಂಗಳೂರು\n• **ವಿಳಾಸ:** 123 MG ರಸ್ತೆ, ಬೆಂಗಳೂರು - 560001\n• **ಫೋನ್:** +91-9876543210\n\n📞 **ಮುಂದಿನ ಹಂತಗಳು:**\n• ನಮ್ಮ ಸೇವಾ ತಂಡವು 2 ಗಂಟೆಗಳಲ್ಲಿ ದೃಢೀಕರಿಸಲು ಕರೆ ಮಾಡುತ್ತದೆ\n• ದಯವಿಟ್ಟು ನಿಮ್ಮ ವಾಹನದ RC, ವಿಮೆ ಪತ್ರಗಳು ಮತ್ತು ಸೇವಾ ಇತಿಹಾಸವನ್ನು ತರಿ\n• 20km ಒಳಗೆ ಉಚಿತ ಪಿಕಪ್/ಡ್ರಾಪ್ ಲಭ್ಯ\n• ಸೇವಾ ಅವಧಿ: 2-4 ಗಂಟೆಗಳು (ಸೇವೆಯ ಪ್ರಕಾರವನ್ನು ಅವಲಂಬಿಸಿ)\n\n**ಸಂಪರ್ಕ:** ಯಾವುದೇ ಬದಲಾವಣೆಗಳಿಗಾಗಿ +91-9876543210\n\nಶೆರ್ಪಾ ಹುಂಡೈ ಸೇವೆಯನ್ನು ಆಯ್ಕೆಮಾಡಿದ್ದಕ್ಕಾಗಿ ಧನ್ಯವಾದಗಳು! 🚗`,
+      marathi: `🔧 **सर्विस बुकिंग कन्फर्म!**\n\n📋 **बुकिंगची माहिती:**\n• **बुकिंग ID:** ${bookingId}\n• **गाडी:** ${session.data.make} ${session.data.model} (${session.data.year})\n• **नोंदणी:** ${session.data.registration || 'दिले नाही'}\n• **सर्विसचा प्रकार:** ${session.data.serviceType}\n• **पसंतीची तारीख:** उद्या (${tomorrow.toLocaleDateString('en-IN')})\n• **वेळ:** 10:00 AM - 12:00 PM\n\n📍 **सर्विस सेंटर:**\n• **मुख्य सर्विस सेंटर** - MG रोड, बंगळूर\n• **पत्ता:** 123 MG रोड, बंगळूर - 560001\n• **फोन:** +91-9876543210\n\n📞 **पुढचे पाऊल:**\n• आमची सर्विस टीम 2 तासांत कन्फर्म करण्यासाठी कॉल करेल\n• कृपया आपल्या गाडीचे RC, विमा कागदपत्रे आणि सर्विस इतिहास आणा\n• 20km आत मोफत पिकअप/ड्रॉप उपलब्ध\n• सर्विसचा कालावधी: 2-4 तास (सर्विसच्या प्रकारावर अवलंबून)\n\n**संपर्क:** कोणत्याही बदलांसाठी +91-9876543210\n\nशेरपा हुंडई सर्विस निवडल्याबद्दल धन्यवाद! 🚗`
+    };
+    
+    session.state = null;
+    session.data = {};
+    setSession(userId, session);
+    return confirmationMessages[userLang] || confirmationMessages.english;
+  }
+
   if (session.state === 'valuation_collect') {
     const make = (input.match(/make\s*:\s*(.*)/i) || [])[1];
     const model = (input.match(/model\s*:\s*(.*)/i) || [])[1];
@@ -1159,6 +1794,205 @@ Thank you for choosing Sherpa Hyundai Service! 🚗`;
     session.data = {};
     setSession(userId, session);
     return confirmation;
+  }
+
+  // Appointment booking flow with multilingual support
+  if (['appointment', 'book appointment', 'schedule appointment', 'meeting', 'consultation'].includes(lower) ||
+      lower.includes('appointment') || lower.includes('meeting') || lower.includes('consultation') ||
+      lower.includes('अपॉइंटमेंट') || lower.includes('मीटिंग') || lower.includes('सलाह') ||
+      lower.includes('appointment book') || lower.includes('meeting chahiye') || lower.includes('consultation lena')) {
+    session.state = 'appointment_booking';
+    session.data = {};
+    setSession(userId, session);
+    
+    // Check if input is Hinglish
+    const isHinglish = /[a-zA-Z]/.test(input) && /[हिंदीकन्नडमराठी]/.test(input) || 
+                       /(main|aap|hai|hain|chahta|chahti|hoon|hain|dekh|raha|rahi|tha|lagbhag|se|lakh|ke|beech|petrol|hi|chahiye|zaroor|pehle|dikha|dijiye|ji|theek|dhanyavaad|swagat|sir|aapka|madad|kar|sakta|kya|mann|koi|khaas|brand|ya|model|bahut|badhiya|chunaav|budget|kitna|range|hamare|paas|model|dono|uplabdh|variant|chahte|bilkul|test|drive|lena|chahenge|turant|gaadi|tayyar|karwata|waise|driving|license|aaiye|rahi|baad|emi|offer|poori|jankari|de|doonga)/i.test(input);
+    
+    const appointmentMessages = {
+      english: `Great! I'll help you book an appointment. Please provide:\n\n**Appointment Details:**\n• Purpose: (e.g., Car Consultation, Test Drive, Service)\n• Preferred Date: (e.g., Tomorrow, Next Week, Specific Date)\n• Preferred Time: (e.g., Morning, Afternoon, Evening)\n• Duration: (e.g., 30 minutes, 1 hour)\n\n**Your Details:**\n• Name:\n• Phone Number:\n• Email (optional):\n\nPlease share all details in one message.`,
+      hindi: isHinglish ? 
+        `Bahut badhiya! Main aapke liye appointment book karne mein madad karunga. Kripya ye details dein:\n\n**Appointment ki jaankari:**\n• Purpose: (jaise, Car Consultation, Test Drive, Service)\n• Preferred Date: (jaise, Tomorrow, Next Week, Specific Date)\n• Preferred Time: (jaise, Morning, Afternoon, Evening)\n• Duration: (jaise, 30 minutes, 1 hour)\n\n**Aapki jaankari:**\n• Name:\n• Phone Number:\n• Email (optional):\n\nKripya saari jaankari ek saath bhejein.` :
+        `बहुत बढ़िया! मैं आपके लिए अपॉइंटमेंट बुक करने में मदद करूंगा। कृपया जानकारी दें:\n\n**अपॉइंटमेंट की जानकारी:**\n• उद्देश्य: (जैसे, कार कंसल्टेशन, टेस्ट ड्राइव, सर्विस)\n• पसंदीदा तारीख: (जैसे, कल, अगले सप्ताह, विशिष्ट तारीख)\n• पसंदीदा समय: (जैसे, सुबह, दोपहर, शाम)\n• अवधि: (जैसे, 30 मिनट, 1 घंटा)\n\n**आपकी जानकारी:**\n• नाम:\n• फोन नंबर:\n• ईमेल (वैकल्पिक):\n\nकृपया सभी जानकारी एक साथ भेजें।`,
+      kannada: `ಚೆನ್ನಾಗಿದೆ! ನಾನು ನಿಮಗಾಗಿ ಅಪಾಯಿಂಟ್ಮೆಂಟ್ ಬುಕ್ ಮಾಡಲು ಸಹಾಯ ಮಾಡುತ್ತೇನೆ. ದಯವಿಟ್ಟು ಒದಗಿಸಿ:\n\n**ಅಪಾಯಿಂಟ್ಮೆಂಟ್ ವಿವರಗಳು:**\n• ಉದ್ದೇಶ: (ಉದಾ, ಕಾರ್ ಸಲಹೆ, ಟೆಸ್ಟ್ ಡ್ರೈವ್, ಸೇವೆ)\n• ಆದ್ಯತೆಯ ದಿನಾಂಕ: (ಉದಾ, ನಾಳೆ, ಮುಂದಿನ ವಾರ, ನಿರ್ದಿಷ್ಟ ದಿನಾಂಕ)\n• ಆದ್ಯತೆಯ ಸಮಯ: (ಉದಾ, ಬೆಳಿಗ್ಗೆ, ಮಧ್ಯಾಹ್ನ, ಸಂಜೆ)\n• ಅವಧಿ: (ಉದಾ, 30 ನಿಮಿಷ, 1 ಗಂಟೆ)\n\n**ನಿಮ್ಮ ವಿವರಗಳು:**\n• ಹೆಸರು:\n• ಫೋನ್ ನಂಬರ್:\n• ಇಮೇಲ್ (ಐಚ್ಛಿಕ):\n\nದಯವಿಟ್ಟು ಎಲ್ಲಾ ವಿವರಗಳನ್ನು ಒಂದೇ ಸಂದೇಶದಲ್ಲಿ ಹಂಚಿಕೊಳ್ಳಿ.`,
+      marathi: `छान! मी तुमच्यासाठी अपॉइंटमेंट बुक करण्यात मदत करेन. कृपया माहिती द्या:\n\n**अपॉइंटमेंटची माहिती:**\n• हेतू: (जसे, कार सल्लागार, टेस्ट ड्राइव, सर्विस)\n• पसंतीची तारीख: (जसे, उद्या, पुढचा आठवडा, विशिष्ट तारीख)\n• पसंतीचा वेळ: (जसे, सकाळ, दुपार, संध्याकाळ)\n• कालावधी: (जसे, 30 मिनिटे, 1 तास)\n\n**तुमची माहिती:**\n• नाव:\n• फोन नंबर:\n• ईमेल (पर्यायी):\n\nकृपया सर्व माहिती एकाच संदेशात सांगा.`
+    };
+    
+    return appointmentMessages[userLang] || appointmentMessages.english;
+  }
+
+  // Enhanced financing completion handler
+  if (session.state === 'financing_inquiry') {
+    const carModelMatch = input.match(/car\s*model\s*:\s*(.*)/i) || input.match(/कार\s*मॉडल\s*:\s*(.*)/i);
+    const carPriceMatch = input.match(/car\s*price\s*:\s*₹?([\d,]+)/i) || input.match(/कार\s*कीमत\s*:\s*₹?([\d,]+)/i);
+    const downPaymentMatch = input.match(/down\s*payment\s*:\s*₹?([\d,]+)/i) || input.match(/डाउन\s*पेमेंट\s*:\s*₹?([\d,]+)/i);
+    const tenureMatch = input.match(/tenure\s*:\s*(\d+)/i) || input.match(/अवधि\s*:\s*(\d+)/i);
+    const incomeMatch = input.match(/income\s*:\s*₹?([\d,]+)/i) || input.match(/आय\s*:\s*₹?([\d,]+)/i);
+    const employmentMatch = input.match(/employment\s*:\s*(.*)/i) || input.match(/रोजगार\s*:\s*(.*)/i);
+    
+    if (carModelMatch) session.data.carModel = carModelMatch[1].trim();
+    if (carPriceMatch) session.data.carPrice = parseInt(carPriceMatch[1].replace(/,/g, ''));
+    if (downPaymentMatch) session.data.downPayment = parseInt(downPaymentMatch[1].replace(/,/g, ''));
+    if (tenureMatch) session.data.tenure = parseInt(tenureMatch[1]);
+    if (incomeMatch) session.data.income = parseInt(incomeMatch[1].replace(/,/g, ''));
+    if (employmentMatch) session.data.employment = employmentMatch[1].trim();
+    
+    // Check if we have all required details
+    if (!session.data.carModel || !session.data.carPrice || !session.data.downPayment || !session.data.tenure || !session.data.income) {
+      setSession(userId, session);
+      
+      const errorMessages = {
+        english: 'Please provide all required details:\n\n**Car Details:**\n• Car Model: (e.g., Hyundai i20, Maruti Swift)\n• Car Price: (e.g., ₹8,00,000)\n• Down Payment: (e.g., ₹2,00,000)\n• Loan Tenure: (e.g., 3, 4, 5 years)\n\n**Your Details:**\n• Monthly Income: (e.g., ₹50,000)\n• Employment Type: (Salaried/Self-employed)',
+        hindi: 'कृपया सभी आवश्यक जानकारी दें:\n\n**कार की जानकारी:**\n• कार मॉडल: (जैसे, हुंडई i20, मारुति स्विफ्ट)\n• कार की कीमत: (जैसे, ₹8,00,000)\n• डाउन पेमेंट: (जैसे, ₹2,00,000)\n• लोन टेन्योर: (जैसे, 3, 4, 5 साल)\n\n**आपकी जानकारी:**\n• मासिक आय: (जैसे, ₹50,000)\n• रोजगार का प्रकार: (सैलरीड/सेल्फ एम्प्लॉयड)',
+        kannada: 'ದಯವಿಟ್ಟು ಎಲ್ಲಾ ಅಗತ್ಯ ವಿವರಗಳನ್ನು ಒದಗಿಸಿ:\n\n**ಕಾರಿನ ವಿವರಗಳು:**\n• ಕಾರ್ ಮಾಡೆಲ್: (ಉದಾ, ಹುಂಡೈ i20, ಮಾರುತಿ ಸ್ವಿಫ್ಟ್)\n• ಕಾರ್ ಬೆಲೆ: (ಉದಾ, ₹8,00,000)\n• ಡೌನ್ ಪೇಮೆಂಟ್: (ಉದಾ, ₹2,00,000)\n• ಲೋನ್ ಅವಧಿ: (ಉದಾ, 3, 4, 5 ವರ್ಷಗಳು)\n\n**ನಿಮ್ಮ ವಿವರಗಳು:**\n• ಮಾಸಿಕ ಆದಾಯ: (ಉದಾ, ₹50,000)\n• ಉದ್ಯೋಗದ ಪ್ರಕಾರ: (ಸಂಬಳ/ಸ್ವ-ಉದ್ಯೋಗಿ)',
+        marathi: 'कृपया सर्व आवश्यक माहिती द्या:\n\n**गाडीची माहिती:**\n• गाडीचे मॉडेल: (जसे, हुंडई i20, मारुती स्विफ्ट)\n• गाडीची किंमत: (जसे, ₹8,00,000)\n• डाउन पेमेंट: (जसे, ₹2,00,000)\n• लोन टेन्योर: (जसे, 3, 4, 5 वर्षे)\n\n**तुमची माहिती:**\n• मासिक उत्पन्न: (जसे, ₹50,000)\n• रोजगाराचा प्रकार: (पगारी/स्व-रोजगारी)'
+      };
+      
+      return errorMessages[userLang] || errorMessages.english;
+    }
+    
+    // Calculate EMI and provide financing options
+    const loanAmount = session.data.carPrice - session.data.downPayment;
+    const interestRate = 8.5; // 8.5% annual interest rate
+    const monthlyRate = interestRate / 12 / 100;
+    const tenureMonths = session.data.tenure * 12;
+    const emi = Math.round((loanAmount * monthlyRate * Math.pow(1 + monthlyRate, tenureMonths)) / (Math.pow(1 + monthlyRate, tenureMonths) - 1));
+    
+    const financingMessages = {
+      english: `💰 **FINANCING OPTIONS AVAILABLE!**\n\n📋 **Loan Details:**\n• **Car Model:** ${session.data.carModel}\n• **Car Price:** ₹${session.data.carPrice.toLocaleString('en-IN')}\n• **Down Payment:** ₹${session.data.downPayment.toLocaleString('en-IN')}\n• **Loan Amount:** ₹${loanAmount.toLocaleString('en-IN')}\n• **Interest Rate:** ${interestRate}% p.a.\n• **Tenure:** ${session.data.tenure} years\n\n💳 **EMI Calculation:**\n• **Monthly EMI:** ₹${emi.toLocaleString('en-IN')}\n• **Total Interest:** ₹${((emi * tenureMonths) - loanAmount).toLocaleString('en-IN')}\n• **Total Amount:** ₹${(emi * tenureMonths).toLocaleString('en-IN')}\n\n📞 **Next Steps:**\n• Our finance team will call you within 2 hours\n• Document verification and approval process\n• Quick disbursal within 24-48 hours\n\n**Contact:** +91-9876543210 for immediate assistance\n\nThank you for choosing Sherpa Hyundai Finance! 🚗`,
+      hindi: `💰 **फाइनेंसिंग ऑप्शन्स उपलब्ध!**\n\n📋 **लोन की जानकारी:**\n• **कार मॉडल:** ${session.data.carModel}\n• **कार की कीमत:** ₹${session.data.carPrice.toLocaleString('en-IN')}\n• **डाउन पेमेंट:** ₹${session.data.downPayment.toLocaleString('en-IN')}\n• **लोन राशि:** ₹${loanAmount.toLocaleString('en-IN')}\n• **ब्याज दर:** ${interestRate}% वार्षिक\n• **अवधि:** ${session.data.tenure} साल\n\n💳 **EMI कैलकुलेशन:**\n• **मासिक EMI:** ₹${emi.toLocaleString('en-IN')}\n• **कुल ब्याज:** ₹${((emi * tenureMonths) - loanAmount).toLocaleString('en-IN')}\n• **कुल राशि:** ₹${(emi * tenureMonths).toLocaleString('en-IN')}\n\n📞 **अगले कदम:**\n• हमारी फाइनेंस टीम 2 घंटे में कॉल करेगी\n• डॉक्यूमेंट वेरिफिकेशन और अप्रूवल प्रोसेस\n• 24-48 घंटे में त्वरित डिसबर्सल\n\n**संपर्क:** तुरंत सहायता के लिए +91-9876543210\n\nशेरपा हुंडई फाइनेंस चुनने के लिए धन्यवाद! 🚗`,
+      kannada: `💰 **ಹಣಕಾಸು ಆಯ್ಕೆಗಳು ಲಭ್ಯ!**\n\n📋 **ಸಾಲದ ವಿವರಗಳು:**\n• **ಕಾರ್ ಮಾಡೆಲ್:** ${session.data.carModel}\n• **ಕಾರ್ ಬೆಲೆ:** ₹${session.data.carPrice.toLocaleString('en-IN')}\n• **ಡೌನ್ ಪೇಮೆಂಟ್:** ₹${session.data.downPayment.toLocaleString('en-IN')}\n• **ಸಾಲದ ಮೊತ್ತ:** ₹${loanAmount.toLocaleString('en-IN')}\n• **ಬಡ್ಡಿ ದರ:** ${interestRate}% ವಾರ್ಷಿಕ\n• **ಅವಧಿ:** ${session.data.tenure} ವರ್ಷಗಳು\n\n💳 **EMI ಲೆಕ್ಕಾಚಾರ:**\n• **ಮಾಸಿಕ EMI:** ₹${emi.toLocaleString('en-IN')}\n• **ಒಟ್ಟು ಬಡ್ಡಿ:** ₹${((emi * tenureMonths) - loanAmount).toLocaleString('en-IN')}\n• **ಒಟ್ಟು ಮೊತ್ತ:** ₹${(emi * tenureMonths).toLocaleString('en-IN')}\n\n📞 **ಮುಂದಿನ ಹಂತಗಳು:**\n• ನಮ್ಮ ಹಣಕಾಸು ತಂಡವು 2 ಗಂಟೆಗಳಲ್ಲಿ ಕರೆ ಮಾಡುತ್ತದೆ\n• ದಾಖಲೆ ಪರಿಶೀಲನೆ ಮತ್ತು ಅನುಮೋದನೆ ಪ್ರಕ್ರಿಯೆ\n• 24-48 ಗಂಟೆಗಳಲ್ಲಿ ತ್ವರಿತ ವಿತರಣೆ\n\n**ಸಂಪರ್ಕ:** ತಕ್ಷಣ ಸಹಾಯಕ್ಕಾಗಿ +91-9876543210\n\nಶೆರ್ಪಾ ಹುಂಡೈ ಹಣಕಾಸನ್ನು ಆಯ್ಕೆಮಾಡಿದ್ದಕ್ಕಾಗಿ ಧನ್ಯವಾದಗಳು! 🚗`,
+      marathi: `💰 **फायनान्सिंग ऑप्शन्स उपलब्ध!**\n\n📋 **लोनची माहिती:**\n• **गाडीचे मॉडेल:** ${session.data.carModel}\n• **गाडीची किंमत:** ₹${session.data.carPrice.toLocaleString('en-IN')}\n• **डाउन पेमेंट:** ₹${session.data.downPayment.toLocaleString('en-IN')}\n• **लोन रक्कम:** ₹${loanAmount.toLocaleString('en-IN')}\n• **व्याज दर:** ${interestRate}% वार्षिक\n• **कालावधी:** ${session.data.tenure} वर्षे\n\n💳 **EMI गणना:**\n• **मासिक EMI:** ₹${emi.toLocaleString('en-IN')}\n• **एकूण व्याज:** ₹${((emi * tenureMonths) - loanAmount).toLocaleString('en-IN')}\n• **एकूण रक्कम:** ₹${(emi * tenureMonths).toLocaleString('en-IN')}\n\n📞 **पुढचे पाऊल:**\n• आमची फायनान्स टीम 2 तासांत कॉल करेल\n• दस्तऐवज सत्यापन आणि मंजुरी प्रक्रिया\n• 24-48 तासांत त्वरित वितरण\n\n**संपर्क:** त्वरित सहायतेसाठी +91-9876543210\n\nशेरपा हुंडई फायनान्स निवडल्याबद्दल धन्यवाद! 🚗`
+    };
+    
+    session.state = null;
+    session.data = {};
+    setSession(userId, session);
+    return financingMessages[userLang] || financingMessages.english;
+  }
+
+  // Enhanced insurance completion handler
+  if (session.state === 'insurance_inquiry') {
+    const carModelMatch = input.match(/car\s*model\s*:\s*(.*)/i) || input.match(/कार\s*मॉडल\s*:\s*(.*)/i);
+    const yearMatch = input.match(/year\s*:\s*(\d{4})/i) || input.match(/साल\s*:\s*(\d{4})/i);
+    const valueMatch = input.match(/value\s*:\s*₹?([\d,]+)/i) || input.match(/मूल्य\s*:\s*₹?([\d,]+)/i);
+    const claimsMatch = input.match(/claims\s*:\s*(yes|no)/i) || input.match(/क्लेम\s*:\s*(हाँ|नहीं)/i);
+    const coverageMatch = input.match(/coverage\s*:\s*(.*)/i) || input.match(/कवरेज\s*:\s*(.*)/i);
+    
+    if (carModelMatch) session.data.carModel = carModelMatch[1].trim();
+    if (yearMatch) session.data.year = yearMatch[1];
+    if (valueMatch) session.data.value = parseInt(valueMatch[1].replace(/,/g, ''));
+    if (claimsMatch) session.data.claims = claimsMatch[1].toLowerCase();
+    if (coverageMatch) session.data.coverage = coverageMatch[1].trim();
+    
+    // Check if we have all required details
+    if (!session.data.carModel || !session.data.year || !session.data.value || !session.data.coverage) {
+      setSession(userId, session);
+      
+      const errorMessages = {
+        english: 'Please provide all required details:\n\n**Vehicle Details:**\n• Car Model: (e.g., Hyundai i20, Maruti Swift)\n• Year of Purchase: (e.g., 2020, 2021)\n• Current Value: (e.g., ₹8,00,000)\n• Previous Claims: (Yes/No)\n\n**Coverage Type:**\n• Comprehensive (Full Coverage)\n• Third Party (Basic Coverage)\n• Zero Depreciation',
+        hindi: 'कृपया सभी आवश्यक जानकारी दें:\n\n**गाड़ी की जानकारी:**\n• कार मॉडल: (जैसे, हुंडई i20, मारुति स्विफ्ट)\n• खरीद का साल: (जैसे, 2020, 2021)\n• वर्तमान मूल्य: (जैसे, ₹8,00,000)\n• पिछले क्लेम: (हाँ/नहीं)\n\n**कवरेज का प्रकार:**\n• कॉम्प्रिहेंसिव (पूर्ण कवरेज)\n• थर्ड पार्टी (बेसिक कवरेज)\n• जीरो डिप्रीसिएशन',
+        kannada: 'ದಯವಿಟ್ಟು ಎಲ್ಲಾ ಅಗತ್ಯ ವಿವರಗಳನ್ನು ಒದಗಿಸಿ:\n\n**ವಾಹನದ ವಿವರಗಳು:**\n• ಕಾರ್ ಮಾಡೆಲ್: (ಉದಾ, ಹುಂಡೈ i20, ಮಾರುತಿ ಸ್ವಿಫ್ಟ್)\n• ಖರೀದಿಯ ವರ್ಷ: (ಉದಾ, 2020, 2021)\n• ಪ್ರಸ್ತುತ ಮೌಲ್ಯ: (ಉದಾ, ₹8,00,000)\n• ಹಿಂದಿನ ಹಕ್ಕುಗಳು: (ಹೌದು/ಇಲ್ಲ)\n\n**ಕವರೇಜ್ ಪ್ರಕಾರ:**\n• ಸಮಗ್ರ (ಪೂರ್ಣ ಕವರೇಜ್)\n• ಮೂರನೇ ಪಕ್ಷ (ಮೂಲಭೂತ ಕವರೇಜ್)\n• ಶೂನ್ಯ ಸವಕಲು',
+        marathi: 'कृपया सर्व आवश्यक माहिती द्या:\n\n**गाडीची माहिती:**\n• गाडीचे मॉडेल: (जसे, हुंडई i20, मारुती स्विफ्ट)\n• खरेदीचे वर्ष: (जसे, 2020, 2021)\n• सध्याचे मूल्य: (जसे, ₹8,00,000)\n• मागील दावे: (होय/नाही)\n\n**कव्हरेजचा प्रकार:**\n• व्यापक (पूर्ण कव्हरेज)\n• तृतीय पक्ष (मूलभूत कव्हरेज)\n• शून्य घसारा'
+      };
+      
+      return errorMessages[userLang] || errorMessages.english;
+    }
+    
+    // Calculate insurance premium
+    const basePremium = session.data.value * 0.03; // 3% of vehicle value
+    const noClaimsDiscount = session.data.claims === 'no' ? 0.1 : 0; // 10% discount for no claims
+    const finalPremium = Math.round(basePremium * (1 - noClaimsDiscount));
+    
+    const insuranceMessages = {
+      english: `🛡️ **INSURANCE QUOTE READY!**\n\n📋 **Policy Details:**\n• **Car Model:** ${session.data.carModel}\n• **Year:** ${session.data.year}\n• **Current Value:** ₹${session.data.value.toLocaleString('en-IN')}\n• **Coverage Type:** ${session.data.coverage}\n• **Previous Claims:** ${session.data.claims === 'yes' ? 'Yes' : 'No'}\n\n💰 **Premium Calculation:**\n• **Base Premium:** ₹${Math.round(basePremium).toLocaleString('en-IN')}\n• **No Claims Discount:** ${noClaimsDiscount * 100}%\n• **Final Premium:** ₹${finalPremium.toLocaleString('en-IN')}\n• **Policy Validity:** 1 Year\n\n📞 **Next Steps:**\n• Our insurance team will call you within 2 hours\n• Policy documentation and payment\n• Instant policy activation\n\n**Contact:** +91-9876543210 for immediate assistance\n\nThank you for choosing Sherpa Hyundai Insurance! 🚗`,
+      hindi: `🛡️ **इंश्योरेंस क्वोट तैयार!**\n\n📋 **पॉलिसी की जानकारी:**\n• **कार मॉडल:** ${session.data.carModel}\n• **साल:** ${session.data.year}\n• **वर्तमान मूल्य:** ₹${session.data.value.toLocaleString('en-IN')}\n• **कवरेज का प्रकार:** ${session.data.coverage}\n• **पिछले क्लेम:** ${session.data.claims === 'yes' ? 'हाँ' : 'नहीं'}\n\n💰 **प्रीमियम कैलकुलेशन:**\n• **बेस प्रीमियम:** ₹${Math.round(basePremium).toLocaleString('en-IN')}\n• **नो क्लेम डिस्काउंट:** ${noClaimsDiscount * 100}%\n• **फाइनल प्रीमियम:** ₹${finalPremium.toLocaleString('en-IN')}\n• **पॉलिसी वैधता:** 1 साल\n\n📞 **अगले कदम:**\n• हमारी इंश्योरेंस टीम 2 घंटे में कॉल करेगी\n• पॉलिसी डॉक्यूमेंटेशन और पेमेंट\n• तुरंत पॉलिसी एक्टिवेशन\n\n**संपर्क:** तुरंत सहायता के लिए +91-9876543210\n\nशेरपा हुंडई इंश्योरेंस चुनने के लिए धन्यवाद! 🚗`,
+      kannada: `🛡️ **ವಿಮೆ ಉಲ್ಲೇಖ ಸಿದ್ಧ!**\n\n📋 **ಪಾಲಿಸಿ ವಿವರಗಳು:**\n• **ಕಾರ್ ಮಾಡೆಲ್:** ${session.data.carModel}\n• **ವರ್ಷ:** ${session.data.year}\n• **ಪ್ರಸ್ತುತ ಮೌಲ್ಯ:** ₹${session.data.value.toLocaleString('en-IN')}\n• **ಕವರೇಜ್ ಪ್ರಕಾರ:** ${session.data.coverage}\n• **ಹಿಂದಿನ ಹಕ್ಕುಗಳು:** ${session.data.claims === 'yes' ? 'ಹೌದು' : 'ಇಲ್ಲ'}\n\n💰 **ಪ್ರೀಮಿಯಂ ಲೆಕ್ಕಾಚಾರ:**\n• **ಬೇಸ್ ಪ್ರೀಮಿಯಂ:** ₹${Math.round(basePremium).toLocaleString('en-IN')}\n• **ನೋ ಕ್ಲೇಮ್ಸ್ ರಿಯಾಯಿತಿ:** ${noClaimsDiscount * 100}%\n• **ಅಂತಿಮ ಪ್ರೀಮಿಯಂ:** ₹${finalPremium.toLocaleString('en-IN')}\n• **ಪಾಲಿಸಿ ಸಿಂಧುತೆ:** 1 ವರ್ಷ\n\n📞 **ಮುಂದಿನ ಹಂತಗಳು:**\n• ನಮ್ಮ ವಿಮೆ ತಂಡವು 2 ಗಂಟೆಗಳಲ್ಲಿ ಕರೆ ಮಾಡುತ್ತದೆ\n• ಪಾಲಿಸಿ ದಾಖಲೆ ಮತ್ತು ಪಾವತಿ\n• ತತ್ಕ್ಷಣ ಪಾಲಿಸಿ ಸಕ್ರಿಯಗೊಳಿಸುವಿಕೆ\n\n**ಸಂಪರ್ಕ:** ತಕ್ಷಣ ಸಹಾಯಕ್ಕಾಗಿ +91-9876543210\n\nಶೆರ್ಪಾ ಹುಂಡೈ ವಿಮೆಯನ್ನು ಆಯ್ಕೆಮಾಡಿದ್ದಕ್ಕಾಗಿ ಧನ್ಯವಾದಗಳು! 🚗`,
+      marathi: `🛡️ **विमा कोट तयार!**\n\n📋 **पॉलिसीची माहिती:**\n• **गाडीचे मॉडेल:** ${session.data.carModel}\n• **वर्ष:** ${session.data.year}\n• **सध्याचे मूल्य:** ₹${session.data.value.toLocaleString('en-IN')}\n• **कव्हरेजचा प्रकार:** ${session.data.coverage}\n• **मागील दावे:** ${session.data.claims === 'yes' ? 'होय' : 'नाही'}\n\n💰 **प्रीमियम गणना:**\n• **बेस प्रीमियम:** ₹${Math.round(basePremium).toLocaleString('en-IN')}\n• **नो क्लेम सूट:** ${noClaimsDiscount * 100}%\n• **अंतिम प्रीमियम:** ₹${finalPremium.toLocaleString('en-IN')}\n• **पॉलिसी वैधता:** 1 वर्ष\n\n📞 **पुढचे पाऊल:**\n• आमची विमा टीम 2 तासांत कॉल करेल\n• पॉलिसी दस्तऐवज आणि पेमेंट\n• त्वरित पॉलिसी सक्रियता\n\n**संपर्क:** त्वरित सहायतेसाठी +91-9876543210\n\nशेरपा हुंडई विमा निवडल्याबद्दल धन्यवाद! 🚗`
+    };
+    
+    session.state = null;
+    session.data = {};
+    setSession(userId, session);
+    return insuranceMessages[userLang] || insuranceMessages.english;
+  }
+
+  // Enhanced appointment completion handler
+  if (session.state === 'appointment_booking') {
+    const purposeMatch = input.match(/purpose\s*:\s*(.*)/i) || input.match(/उद्देश्य\s*:\s*(.*)/i);
+    const dateMatch = input.match(/date\s*:\s*(.*)/i) || input.match(/तारीख\s*:\s*(.*)/i);
+    const timeMatch = input.match(/time\s*:\s*(.*)/i) || input.match(/समय\s*:\s*(.*)/i);
+    const durationMatch = input.match(/duration\s*:\s*(.*)/i) || input.match(/अवधि\s*:\s*(.*)/i);
+    const nameMatch = input.match(/name\s*:\s*(.*)/i) || input.match(/नाम\s*:\s*(.*)/i);
+    const phoneMatch = input.match(/phone\s*:\s*(\+?\d[\d\s-]{6,})/i) || input.match(/फोन\s*:\s*(\+?\d[\d\s-]{6,})/i);
+    const emailMatch = input.match(/email\s*:\s*([^\s]+@[^\s]+\.[^\s]+)/i);
+    
+    if (purposeMatch) session.data.purpose = purposeMatch[1].trim();
+    if (dateMatch) session.data.date = dateMatch[1].trim();
+    if (timeMatch) session.data.time = timeMatch[1].trim();
+    if (durationMatch) session.data.duration = durationMatch[1].trim();
+    if (nameMatch) session.data.name = nameMatch[1].trim();
+    if (phoneMatch) session.data.phone = phoneMatch[1].replace(/\s|-/g, '');
+    if (emailMatch) session.data.email = emailMatch[1].trim();
+    
+    // Check if we have all required details
+    if (!session.data.purpose || !session.data.date || !session.data.time || !session.data.name || !session.data.phone) {
+      setSession(userId, session);
+      
+      const errorMessages = {
+        english: 'Please provide all required details:\n\n**Appointment Details:**\n• Purpose: (e.g., Car Consultation, Test Drive, Service)\n• Preferred Date: (e.g., Tomorrow, Next Week, Specific Date)\n• Preferred Time: (e.g., Morning, Afternoon, Evening)\n• Duration: (e.g., 30 minutes, 1 hour)\n\n**Your Details:**\n• Name:\n• Phone Number:\n• Email (optional):',
+        hindi: 'कृपया सभी आवश्यक जानकारी दें:\n\n**अपॉइंटमेंट की जानकारी:**\n• उद्देश्य: (जैसे, कार कंसल्टेशन, टेस्ट ड्राइव, सर्विस)\n• पसंदीदा तारीख: (जैसे, कल, अगले सप्ताह, विशिष्ट तारीख)\n• पसंदीदा समय: (जैसे, सुबह, दोपहर, शाम)\n• अवधि: (जैसे, 30 मिनट, 1 घंटा)\n\n**आपकी जानकारी:**\n• नाम:\n• फोन नंबर:\n• ईमेल (वैकल्पिक):',
+        kannada: 'ದಯವಿಟ್ಟು ಎಲ್ಲಾ ಅಗತ್ಯ ವಿವರಗಳನ್ನು ಒದಗಿಸಿ:\n\n**ಅಪಾಯಿಂಟ್ಮೆಂಟ್ ವಿವರಗಳು:**\n• ಉದ್ದೇಶ: (ಉದಾ, ಕಾರ್ ಸಲಹೆ, ಟೆಸ್ಟ್ ಡ್ರೈವ್, ಸೇವೆ)\n• ಆದ್ಯತೆಯ ದಿನಾಂಕ: (ಉದಾ, ನಾಳೆ, ಮುಂದಿನ ವಾರ, ನಿರ್ದಿಷ್ಟ ದಿನಾಂಕ)\n• ಆದ್ಯತೆಯ ಸಮಯ: (ಉದಾ, ಬೆಳಿಗ್ಗೆ, ಮಧ್ಯಾಹ್ನ, ಸಂಜೆ)\n• ಅವಧಿ: (ಉದಾ, 30 ನಿಮಿಷ, 1 ಗಂಟೆ)\n\n**ನಿಮ್ಮ ವಿವರಗಳು:**\n• ಹೆಸರು:\n• ಫೋನ್ ನಂಬರ್:\n• ಇಮೇಲ್ (ಐಚ್ಛಿಕ):',
+        marathi: 'कृपया सर्व आवश्यक माहिती द्या:\n\n**अपॉइंटमेंटची माहिती:**\n• हेतू: (जसे, कार सल्लागार, टेस्ट ड्राइव, सर्विस)\n• पसंतीची तारीख: (जसे, उद्या, पुढचा आठवडा, विशिष्ट तारीख)\n• पसंतीचा वेळ: (जसे, सकाळ, दुपार, संध्याकाळ)\n• कालावधी: (जसे, 30 मिनिटे, 1 तास)\n\n**तुमची माहिती:**\n• नाव:\n• फोन नंबर:\n• ईमेल (पर्यायी):'
+      };
+      
+      return errorMessages[userLang] || errorMessages.english;
+    }
+    
+    // Generate appointment confirmation
+    const appointmentId = `AP-${Date.now().toString().slice(-6)}`;
+    
+    const appointmentMessages = {
+      english: `📅 **APPOINTMENT BOOKED SUCCESSFULLY!**\n\n📋 **Appointment Details:**\n• **Appointment ID:** ${appointmentId}\n• **Purpose:** ${session.data.purpose}\n• **Date:** ${session.data.date}\n• **Time:** ${session.data.time}\n• **Duration:** ${session.data.duration || '1 hour'}\n• **Customer:** ${session.data.name}\n• **Phone:** ${session.data.phone}${session.data.email ? `\n• **Email:** ${session.data.email}` : ''}\n\n📍 **Location:**\n• **Main Showroom** - MG Road, Bangalore\n• **Address:** 123 MG Road, Bangalore - 560001\n• **Phone:** +91-9876543210\n\n📞 **Next Steps:**\n• Our team will call you within 2 hours to confirm\n• Please arrive 10 minutes before your appointment\n• Free parking available\n• Refreshments will be provided\n\n**Contact:** +91-9876543210 for any changes\n\nThank you for choosing Sherpa Hyundai! 🚗`,
+      hindi: `📅 **अपॉइंटमेंट सफलतापूर्वक बुक!**\n\n📋 **अपॉइंटमेंट की जानकारी:**\n• **अपॉइंटमेंट आईडी:** ${appointmentId}\n• **उद्देश्य:** ${session.data.purpose}\n• **तारीख:** ${session.data.date}\n• **समय:** ${session.data.time}\n• **अवधि:** ${session.data.duration || '1 घंटा'}\n• **ग्राहक:** ${session.data.name}\n• **फोन:** ${session.data.phone}${session.data.email ? `\n• **ईमेल:** ${session.data.email}` : ''}\n\n📍 **स्थान:**\n• **मुख्य शोरूम** - MG रोड, बैंगलोर\n• **पता:** 123 MG रोड, बैंगलोर - 560001\n• **फोन:** +91-9876543210\n\n📞 **अगले कदम:**\n• हमारी टीम 2 घंटे में कॉन्फर्म करने के लिए कॉल करेगी\n• कृपया अपॉइंटमेंट से 10 मिनट पहले पहुंचें\n• मुफ्त पार्किंग उपलब्ध\n• रिफ्रेशमेंट प्रदान किया जाएगा\n\n**संपर्क:** कोई बदलाव के लिए +91-9876543210\n\nशेरपा हुंडई चुनने के लिए धन्यवाद! 🚗`,
+      kannada: `📅 **ಅಪಾಯಿಂಟ್ಮೆಂಟ್ ಯಶಸ್ವಿಯಾಗಿ ಬುಕ್!**\n\n📋 **ಅಪಾಯಿಂಟ್ಮೆಂಟ್ ವಿವರಗಳು:**\n• **ಅಪಾಯಿಂಟ್ಮೆಂಟ್ ID:** ${appointmentId}\n• **ಉದ್ದೇಶ:** ${session.data.purpose}\n• **ದಿನಾಂಕ:** ${session.data.date}\n• **ಸಮಯ:** ${session.data.time}\n• **ಅವಧಿ:** ${session.data.duration || '1 ಗಂಟೆ'}\n• **ಗ್ರಾಹಕ:** ${session.data.name}\n• **ಫೋನ್:** ${session.data.phone}${session.data.email ? `\n• **ಇಮೇಲ್:** ${session.data.email}` : ''}\n\n📍 **ಸ್ಥಳ:**\n• **ಮುಖ್ಯ ಶೋರೂಮ್** - MG ರಸ್ತೆ, ಬೆಂಗಳೂರು\n• **ವಿಳಾಸ:** 123 MG ರಸ್ತೆ, ಬೆಂಗಳೂರು - 560001\n• **ಫೋನ್:** +91-9876543210\n\n📞 **ಮುಂದಿನ ಹಂತಗಳು:**\n• ನಮ್ಮ ತಂಡವು 2 ಗಂಟೆಗಳಲ್ಲಿ ದೃಢೀಕರಿಸಲು ಕರೆ ಮಾಡುತ್ತದೆ\n• ದಯವಿಟ್ಟು ನಿಮ್ಮ ಅಪಾಯಿಂಟ್ಮೆಂಟ್ ಕ್ಕೆ 10 ನಿಮಿಷ ಮುಂಚೆ ಬನ್ನಿ\n• ಉಚಿತ ಪಾರ್ಕಿಂಗ್ ಲಭ್ಯ\n• ತಾಜಾ ಪಾನೀಯಗಳನ್ನು ಒದಗಿಸಲಾಗುತ್ತದೆ\n\n**ಸಂಪರ್ಕ:** ಯಾವುದೇ ಬದಲಾವಣೆಗಳಿಗಾಗಿ +91-9876543210\n\nಶೆರ್ಪಾ ಹುಂಡೈ ಆಯ್ಕೆಮಾಡಿದ್ದಕ್ಕಾಗಿ ಧನ್ಯವಾದಗಳು! 🚗`,
+      marathi: `📅 **अपॉइंटमेंट यशस्वीरित्या बुक!**\n\n📋 **अपॉइंटमेंटची माहिती:**\n• **अपॉइंटमेंट ID:** ${appointmentId}\n• **हेतू:** ${session.data.purpose}\n• **तारीख:** ${session.data.date}\n• **वेळ:** ${session.data.time}\n• **कालावधी:** ${session.data.duration || '1 तास'}\n• **ग्राहक:** ${session.data.name}\n• **फोन:** ${session.data.phone}${session.data.email ? `\n• **ईमेल:** ${session.data.email}` : ''}\n\n📍 **स्थान:**\n• **मुख्य शोरूम** - MG रोड, बंगळूर\n• **पत्ता:** 123 MG रोड, बंगळूर - 560001\n• **फोन:** +91-9876543210\n\n📞 **पुढचे पाऊल:**\n• आमची टीम 2 तासांत कन्फर्म करण्यासाठी कॉल करेल\n• कृपया आपल्या अपॉइंटमेंटपूर्वी 10 मिनिटे आधी या\n• मोफत पार्किंग उपलब्ध\n• ताजे पेय प्रदान केले जाईल\n\n**संपर्क:** कोणत्याही बदलांसाठी +91-9876543210\n\nशेरपा हुंडई निवडल्याबद्दल धन्यवाद! 🚗`
+    };
+    
+    session.state = null;
+    session.data = {};
+    setSession(userId, session);
+    return appointmentMessages[userLang] || appointmentMessages.english;
+  }
+
+  // Language selection flow
+  if (session.state === 'language_selection') {
+    let selectedLang = 'english';
+    
+    if (lower.includes('1') || lower.includes('english') || lower.includes('अंग्रेजी')) {
+      selectedLang = 'english';
+    } else if (lower.includes('2') || lower.includes('hindi') || lower.includes('हिंदी')) {
+      selectedLang = 'hindi';
+    } else if (lower.includes('3') || lower.includes('kannada') || lower.includes('ಕನ್ನಡ')) {
+      selectedLang = 'kannada';
+    } else if (lower.includes('4') || lower.includes('marathi') || lower.includes('मराठी')) {
+      selectedLang = 'marathi';
+    } else {
+      return `Please select a valid language option (1-4) or type the language name.`;
+    }
+    
+    session.data.language = selectedLang;
+    session.state = null;
+    setSession(userId, session);
+    
+    const langMessages = {
+      english: 'Language changed to English! How can I help you today?',
+      hindi: 'भाषा हिंदी में बदल गई! आज मैं आपकी कैसे मदद कर सकता हूं?',
+      kannada: 'ಭಾಷೆ ಕನ್ನಡಕ್ಕೆ ಬದಲಾಯಿತು! ಇಂದು ನಾನು ನಿಮಗೆ ಹೇಗೆ ಸಹಾಯ ಮಾಡಬಹುದು?',
+      marathi: 'भाषा मराठीमध्ये बदलली! आज मी तुमची कशी मदत करू शकतो?'
+    };
+    
+    return langMessages[selectedLang];
   }
 
   return null;

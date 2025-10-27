@@ -27,6 +27,19 @@ FORMAT AND LOCALE RULES:
 - Use Indian digit grouping for numbers (e.g., ₹12,34,567) when appropriate.
 - When quoting user budgets like "15 lakhs", convert to ₹15,00,000 if needed.
 
+LANGUAGE RESPONSE RULES:
+- If user sends Hinglish messages (mix of Hindi and English), respond in Hinglish using Roman script.
+- Use common Hinglish phrases like "main", "aap", "hai", "hain", "chahta", "chahiye", "dekh", "raha", "rahi", "hun".
+- Examples of Hinglish responses:
+  * "Namaste! Sherpa Hyundai mein aapka swagat hai! Aaj main aapki kaise madad kar sakta hun?"
+  * "Bahut badhiya! Aapka budget kya hai? (Maximum)"
+  * "Samajh gaya. Budget up to ₹15,00,000. Car ka type choose karein: Hatchback | MPV | SUV | Sedan"
+  * "Perfect! SUV it is. Brand choose karein: Ford | Honda | Hyundai | Kia | Mahindra | Maruti"
+  * "Aapke criteria ke hisaab se cars mili hain:"
+- If user sends pure Hindi (Devanagari script), respond in Hindi.
+- If user sends pure English, respond in English.
+- Always match the user's language preference for the conversation.
+
 SPECIFIC INTENT HANDLING:
 - For car comparisons: Use searchInventoryTool to find both cars, then compare their features, prices, and specifications.
 - For test drive bookings: Use scheduleTestDriveTool with car details, date, time, and customer information.
@@ -391,16 +404,54 @@ function generateQuickResponse(message, context = null) {
   
   // Handle common greetings
   if (lowerMessage.includes('hello') || lowerMessage.includes('hi') || lowerMessage.includes('hey')) {
+    // Check if user is sending Hinglish
+    const isHinglish = /[a-zA-Z]/.test(message) && (
+      message.includes('main') || message.includes('aap') || message.includes('hai') || 
+      message.includes('hain') || message.includes('chahta') || message.includes('chahiye') ||
+      message.includes('dekh') || message.includes('raha') || message.includes('rahi') ||
+      message.includes('hun') || message.includes('ke') || message.includes('liye') ||
+      message.includes('se') || message.includes('tak') || message.includes('lakh')
+    );
+    
+    if (isHinglish) {
+      return 'Namaste! Sherpa Hyundai mein aapka swagat hai! Aaj main aapki kaise madad kar sakta hun?';
+    }
     return 'Hello! Welcome to Sherpa Hyundai! How can I help you today?';
   }
   
   // Handle thank you
   if (lowerMessage.includes('thank') || lowerMessage.includes('thanks')) {
+    const isHinglish = /[a-zA-Z]/.test(message) && (
+      message.includes('main') || message.includes('aap') || message.includes('hai') || 
+      message.includes('hain') || message.includes('chahta') || message.includes('chahiye') ||
+      message.includes('dekh') || message.includes('raha') || message.includes('rahi') ||
+      message.includes('hun') || message.includes('ke') || message.includes('liye') ||
+      message.includes('se') || message.includes('tak') || message.includes('lakh')
+    );
+    
+    if (isHinglish) {
+      return 'Aapka dhanyavaad! Aur koi madad chahiye?';
+    }
     return 'You\'re welcome! Is there anything else I can help you with?';
   }
   
   // Handle yes/no responses
   if (lowerMessage.includes('yes') || lowerMessage.includes('yeah') || lowerMessage.includes('sure')) {
+    const isHinglish = /[a-zA-Z]/.test(message) && (
+      message.includes('main') || message.includes('aap') || message.includes('hai') || 
+      message.includes('hain') || message.includes('chahta') || message.includes('chahiye') ||
+      message.includes('dekh') || message.includes('raha') || message.includes('rahi') ||
+      message.includes('hun') || message.includes('ke') || message.includes('liye') ||
+      message.includes('se') || message.includes('tak') || message.includes('lakh')
+    );
+    
+    if (isHinglish) {
+      if (context && context.pendingActions.includes('test_drive_booking')) {
+        return 'Bahut badhiya! Main aapki test drive book karne mein madad karta hun. Aapka preferred date aur time kya hai?';
+      }
+      return 'Perfect! Main aapki aur kaise madad kar sakta hun?';
+    }
+    
     if (context && context.pendingActions.includes('test_drive_booking')) {
       return 'Great! Let me help you book a test drive. What\'s your preferred date and time?';
     }
@@ -408,6 +459,17 @@ function generateQuickResponse(message, context = null) {
   }
   
   if (lowerMessage.includes('no') || lowerMessage.includes('not')) {
+    const isHinglish = /[a-zA-Z]/.test(message) && (
+      message.includes('main') || message.includes('aap') || message.includes('hai') || 
+      message.includes('hain') || message.includes('chahta') || message.includes('chahiye') ||
+      message.includes('dekh') || message.includes('raha') || message.includes('rahi') ||
+      message.includes('hun') || message.includes('ke') || message.includes('liye') ||
+      message.includes('se') || message.includes('tak') || message.includes('lakh')
+    );
+    
+    if (isHinglish) {
+      return 'Koi baat nahi! Aur koi madad chahiye?';
+    }
     return 'No problem! Is there anything else I can help you with?';
   }
   
@@ -416,6 +478,17 @@ function generateQuickResponse(message, context = null) {
     const nameMatch = message.match(/name:\s*([^\n]+)/i);
     const phoneMatch = message.match(/phone:\s*([^\n]+)/i);
     if (nameMatch && phoneMatch) {
+      const isHinglish = /[a-zA-Z]/.test(message) && (
+        message.includes('main') || message.includes('aap') || message.includes('hai') || 
+        message.includes('hain') || message.includes('chahta') || message.includes('chahiye') ||
+        message.includes('dekh') || message.includes('raha') || message.includes('rahi') ||
+        message.includes('hun') || message.includes('ke') || message.includes('liye') ||
+        message.includes('se') || message.includes('tak') || message.includes('lakh')
+      );
+      
+      if (isHinglish) {
+        return `Dhanyavaad, ${nameMatch[1].trim()}! Main aapka phone number ${phoneMatch[1].trim()} note kar liya hai. Aage kaise madad kar sakta hun?`;
+      }
       return `Thank you, ${nameMatch[1].trim()}! I've noted your phone number ${phoneMatch[1].trim()}. How can I help you next?`;
     }
   }

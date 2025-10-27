@@ -716,7 +716,7 @@ export function formatCarListing(car, index = 0) {
 📊 ${mileage}km | 🎨 ${color} | 💰 ${price}`;
 }
 
-export function formatMultipleCars(cars) {
+export function formatMultipleCars(cars, startIndex = 0) {
   if (!cars || cars.length === 0) {
     return 'No cars found matching your criteria.';
   }
@@ -725,14 +725,14 @@ export function formatMultipleCars(cars) {
     return formatCarListing(cars[0]);
   }
 
-  // Limit to 5 cars to stay within WhatsApp character limit
-  const displayCars = cars.slice(0, 5);
-  const hasMore = cars.length > 5;
+  // Get the next 5 cars starting from startIndex
+  const displayCars = cars.slice(startIndex, startIndex + 5);
+  const hasMore = cars.length > startIndex + 5;
   
-  let result = `Found ${cars.length} cars matching your criteria${hasMore ? ' (showing top 5)' : ''}:\n\n`;
+  let result = `Found ${cars.length} cars matching your criteria:\n\n`;
   
   displayCars.forEach((car, index) => {
-    result += formatCarListing(car, index);
+    result += formatCarListing(car, startIndex + index);
     if (index < displayCars.length - 1) {
       result += '\n\n---\n\n';
     }
