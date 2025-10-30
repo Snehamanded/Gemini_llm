@@ -97,30 +97,20 @@ export async function handleDeterministicFlows(userId, text) {
     // This prevents the bot from restarting conversations unexpectedly
   }
   
-  // Detect language and set user preference
+  // Detect language and set user preference using centralized detection
   const detectedLang = detectLanguage(input);
   
-  // Enhanced Hinglish detection for mixed Hindi-English patterns
-  const isHinglishInput = /[a-zA-Z]/.test(input) && (
-    input.includes('main') || input.includes('aap') || input.includes('hai') || 
-    input.includes('hain') || input.includes('chahta') || input.includes('chahiye') ||
-    input.includes('dekh') || input.includes('raha') || input.includes('rahi') ||
-    input.includes('hun') || input.includes('ke') || input.includes('liye') ||
-    input.includes('se') || input.includes('tak') || input.includes('lakh')
-  );
-  
-  // Set language preference
-  if (isHinglishInput) {
-    session.data = session.data || {};
-    session.data.language = 'hinglish';
-    setSession(userId, session);
-  } else if (detectedLang === 'english' && session.data?.language && session.data.language !== 'english') {
-    session.data.language = 'english';
-    setSession(userId, session);
-  } else if (detectedLang !== 'english') {
-    session.data = session.data || {};
-    session.data.language = detectedLang;
-    setSession(userId, session);
+  // Set language preference based on detected language
+  session.data = session.data || {};
+  if (detectedLang !== session.data.language) {
+    const tokenCount = (input.trim().match(/\S+/g) || []).length;
+    const priorLang = session.data.language;
+    // Do not downgrade from Hinglish/Hindi to English on short tokens (e.g., brand names)
+    const shouldPreservePrior = (priorLang === 'hinglish' || priorLang === 'hindi') && detectedLang === 'english' && tokenCount <= 2;
+    if (!shouldPreservePrior) {
+      session.data.language = detectedLang;
+      setSession(userId, session);
+    }
   }
   
   const userLang = session.data?.language || 'english';
@@ -660,10 +650,10 @@ Please type the number (1-4) or language name.`;
     return aboutMenu();
   }
 
-  // Browse Used Cars entry — always ask budget first
-  if (['browse used cars', 'browse cars', 'used cars', '2'].includes(lower) ||
+  // Browse Used Cars entry — always ask budget first (only when not in another flow)
+  if (!session.state && (['browse used cars', 'browse cars', 'used cars', '2'].includes(lower) ||
       lower.includes('second hand car') || lower.includes('used car') || lower.includes('pre-owned car') ||
-      lower.includes('second hand car dekhna') || lower.includes('used car chahiye') || lower.includes('pre-owned car dekh raha')) {
+      lower.includes('second hand car dekhna') || lower.includes('used car chahiye') || lower.includes('pre-owned car dekh raha'))) {
     session.state = 'browse_budget'; 
     session.data = session.data || {}; 
     setSession(userId, session);
@@ -867,7 +857,7 @@ Please type the number (1-4) or language name.`;
       setSession(userId, session);
       // Use enhanced formatting from tools
       const { formatMultipleCars } = await import('./tools.js');
-      const enhancedFormat = formatMultipleCars(session.data.vehicles, 0);
+      const enhancedFormat = formatMultipleCars(session.data.vehicles, 0, userLang);
       return enhancedFormat;
     }
     // Else ask for brand selection
@@ -911,7 +901,7 @@ Please type the number (1-4) or language name.`;
         session.data.carsShown = 0; // Initialize cars shown counter
         setSession(userId, session);
         const { formatMultipleCars } = await import('./tools.js');
-        const enhancedFormat = formatMultipleCars(session.data.vehicles, 0);
+        const enhancedFormat = formatMultipleCars(session.data.vehicles, 0, userLang);
         return `Great! Showing all brands. ${enhancedFormat}`;
       }
       
@@ -958,7 +948,7 @@ Please type the number (1-4) or language name.`;
       setSession(userId, session);
       // Use enhanced formatting from tools
       const { formatMultipleCars } = await import('./tools.js');
-      const enhancedFormat = formatMultipleCars(session.data.vehicles, 0);
+      const enhancedFormat = formatMultipleCars(session.data.vehicles, 0, userLang);
       return enhancedFormat;
     } catch (_) {
       return 'Please type a brand (make), e.g., Toyota. Or type "any brand" to see all brands.';
@@ -978,8 +968,8 @@ Please type the number (1-4) or language name.`;
     }
     
     
-    // Handle "show more" request
-    if (lower.includes('show more') || lower.includes('more cars')) {
+    // Handle "show more" request (support Hinglish/Hindi aliases)
+    if (lower.includes('show more') || lower.includes('more cars') || lower.includes('aur dikao') || lower.includes('aur dikhao') || lower.includes('और दिखाओ')) {
       // Track how many cars have been shown so far
       const carsShown = session.data?.carsShown || 5; // Start at 5 since initial display shows 5
       
@@ -993,7 +983,7 @@ Please type the number (1-4) or language name.`;
       
       const { formatMultipleCars } = await import('./tools.js');
       // Pass all vehicles and startIndex to formatMultipleCars
-      return formatMultipleCars(vehicles, carsShown);
+      return formatMultipleCars(vehicles, carsShown, userLang);
     }
     
     let chosen = null;
@@ -1071,7 +1061,7 @@ Please type the number (1-4) or language name.`;
 
   // Handle car selection response (test drive booking flow)
   if (session.state === 'car_selected') {
-    if (lower.includes('yes') || lower.includes('y') || lower.includes('book') || lower.includes('test drive')) {
+    if (lower.includes('yes') || lower.includes('y') || lower.includes('book') || lower.includes('test drive') || lower.includes('haan') || lower.includes('haanji') || lower === 'ha') {
       session.state = 'testdrive_name';
       session.data.testDriveCar = session.data.selectedCar;
       setSession(userId, session);
@@ -1095,9 +1085,25 @@ Please type the number (1-4) or language name.`;
       session.data.customerName = name;
       session.state = 'testdrive_phone';
       setSession(userId, session);
-      return `Thanks ${name}! Now please provide your **phone number** and confirm if you have a **valid driving license**.\n\nFormat: Phone: [your number], DL: Yes/No`;
+			const isHinglish = /[a-zA-Z]/.test(input) && /[हिंदीकन्नडमराठी]/.test(input) || /(main|aap|hai|hain|chahta|chahti|hoon|dekh|raha|rahi|kripya|phone|number|license|dl|yes|no)/i.test(input);
+			const messages = {
+				english: `Thanks ${name}! Now please provide your **phone number** and confirm if you have a **valid driving license**.\n\nFormat: Phone: [your number], DL: Yes/No`,
+				hindi: isHinglish
+					? `Thanks ${name}! Ab apna **phone number** aur **driving license (DL)** status batayein.\n\nFormat: Phone: [aapka number], DL: Yes/No`
+					: `धन्यवाद ${name}! अब अपना **फोन नंबर** और **ड्राइविंग लाइसेंस (DL)** की स्थिति बताएं।\n\nफॉर्मेट: Phone: [आपका नंबर], DL: Yes/No`,
+				kannada: `ಧನ್ಯವಾದಗಳು ${name}! ಈಗ ದಯವಿಟ್ಟು ನಿಮ್ಮ **ಫೋನ್ ಸಂಖ್ಯೆ** ಮತ್ತು **ಡ್ರೈವಿಂಗ್ ಲೈಸೆನ್ಸ್** ಇದ್ದೆಯೇ ಎಂದು ತಿಳಿಸಿ.\n\nಫಾರ್ಮ್ಯಾಟ್: Phone: [ನಿಮ್ಮ ಸಂಖ್ಯೆ], DL: Yes/No`,
+				marathi: `धन्यवाद ${name}! आता तुमचा **फोन नंबर** आणि **ड्रायव्हिंग लायसन्स (DL)** आहे का ते सांगा.\n\nफॉरमॅट: Phone: [तुमचा नंबर], DL: Yes/No`
+			};
+			return messages[userLang] || messages.english;
     } else {
-      return 'Please provide your full name. Format: Name: [Your full name]';
+			const isHinglish = /[a-zA-Z]/.test(input) && /[हिंदीकन्नडमराठी]/.test(input) || /(naam|name|batayein)/i.test(input);
+			const messages = {
+				english: 'Please provide your full name. Format: Name: [Your full name]',
+				hindi: isHinglish ? 'Kripya apna poora naam batayein. Format: Name: [aapka poora naam]' : 'कृपया अपना पूरा नाम बताएं। फॉर्मेट: Name: [आपका पूरा नाम]',
+				kannada: 'ದಯವಿಟ್ಟು ನಿಮ್ಮ ಪೂರ್ಣ ಹೆಸರು ನೀಡಿ. ಫಾರ್ಮ್ಯಾಟ್: Name: [ನಿಮ್ಮ ಪೂರ್ಣ ಹೆಸರು]',
+				marathi: 'कृपया तुमचे पूर्ण नाव द्या. फॉरमॅट: Name: [तुमचे पूर्ण नाव]'
+			};
+			return messages[userLang] || messages.english;
     }
   }
 
@@ -1121,10 +1127,25 @@ Please type the number (1-4) or language name.`;
       session.data.hasDL = hasDL;
       session.state = 'testdrive_location';
       setSession(userId, session);
-      
-      return `Perfect! Phone: ${phone}, DL: ${hasDL ? 'Yes' : 'No'}\n\nNow please choose your preferred **test drive location**:\n\n1. **Main Showroom** (MG Road)\n2. **Banashankari Branch**\n3. **Whitefield Branch**\n\nType the number (1, 2, or 3) or location name.`;
+			const isHinglish = /[a-zA-Z]/.test(input) && /[हिंदीकन्नडमराठी]/.test(input) || /(location|branch|showroom|kahan|kahaan|choose|chune)/i.test(input);
+			const messages = {
+				english: `Perfect! Phone: ${phone}, DL: ${hasDL ? 'Yes' : 'No'}\n\nNow please choose your preferred **test drive location**:\n\n1. **Main Showroom** (MG Road)\n2. **Banashankari Branch**\n3. **Whitefield Branch**\n\nType the number (1, 2, or 3) or location name.`,
+				hindi: isHinglish
+					? `Perfect! Phone: ${phone}, DL: ${hasDL ? 'Yes' : 'No'}\n\nAb apni pasand ka **test drive location** choose karein:\n\n1. **Main Showroom** (MG Road)\n2. **Banashankari Branch**\n3. **Whitefield Branch**\n\nNumber type karein (1, 2, ya 3) ya location ka naam likhein.`
+					: `परफेक्ट! फोन: ${phone}, DL: ${hasDL ? 'Yes' : 'No'}\n\nअब अपनी पसंद का **टेस्ट ड्राइव लोकेशन** चुनें:\n\n1. **Main Showroom** (MG Road)\n2. **Banashankari Branch**\n3. **Whitefield Branch**\n\nनंबर टाइप करें (1, 2, या 3) या लोकेशन का नाम लिखें।`,
+				kannada: `ಪರಫೆಕ್ಟ್! ಫೋನ್: ${phone}, DL: ${hasDL ? 'Yes' : 'No'}\n\nಈಗ ನಿಮ್ಮ **ಟೆಸ್ಟ್ ಡ್ರೈವ್ ಸ್ಥಳ** ಆಯ್ಕೆಮಾಡಿ:\n\n1. **Main Showroom** (MG Road)\n2. **Banashankari Branch**\n3. **Whitefield Branch**\n\nಸಂಖ್ಯೆ (1, 2, ಅಥವಾ 3) ಅಥವಾ ಸ್ಥಳದ ಹೆಸರನ್ನು ಟೈಪ್ ಮಾಡಿ.`,
+				marathi: `परफेक्ट! फोन: ${phone}, DL: ${hasDL ? 'Yes' : 'No'}\n\nआता तुमचा **टेस्ट ड्राइव लोकेशन** निवडा:\n\n1. **Main Showroom** (MG Road)\n2. **Banashankari Branch**\n3. **Whitefield Branch**\n\nक्रमांक टाईप करा (1, 2, किंवा 3) किंवा लोकेशनचे नाव लिहा.`
+			};
+			return messages[userLang] || messages.english;
     } else {
-      return 'Please provide both phone number and DL status. Format: Phone: [your number], DL: Yes/No';
+			const isHinglish = /[a-zA-Z]/.test(input) && /[हिंदीकन्नडमराठी]/.test(input) || /(phone|number|dl|yes|no)/i.test(input);
+			const messages = {
+				english: 'Please provide both phone number and DL status. Format: Phone: [your number], DL: Yes/No',
+				hindi: isHinglish ? 'Kripya phone number aur DL status dono dein. Format: Phone: [aapka number], DL: Yes/No' : 'कृपया फोन नंबर और DL स्थिति दोनों दें। फॉर्मेट: Phone: [आपका नंबर], DL: Yes/No',
+				kannada: 'ದಯವಿಟ್ಟು ಫೋನ್ ಸಂಖ್ಯೆ ಮತ್ತು DL ಸ್ಥಿತಿ ಎರಡನ್ನೂ ನೀಡಿ. ಫಾರ್ಮ್ಯಾಟ್: Phone: [ನಿಮ್ಮ ಸಂಖ್ಯೆ], DL: Yes/No',
+				marathi: 'कृपया फोन नंबर आणि DL स्टेटस दोन्ही द्या. फॉरमॅट: Phone: [तुमचा नंबर], DL: Yes/No'
+			};
+			return messages[userLang] || messages.english;
     }
   }
 
@@ -1138,7 +1159,14 @@ Please type the number (1-4) or language name.`;
     } else if (lower.includes('3') || lower.includes('whitefield')) {
       location = 'Whitefield Branch';
     } else {
-      return 'Please select a location. Type 1, 2, or 3, or mention the location name.';
+			const isHinglish = /[a-zA-Z]/.test(input) && /[हिंदीकन्नडमराठी]/.test(input) || /(location|select|chune|choose)/i.test(input);
+			const messages = {
+				english: 'Please select a location. Type 1, 2, or 3, or mention the location name.',
+				hindi: isHinglish ? 'Kripya location select karein. 1, 2, ya 3 type karein, ya location ka naam likhein.' : 'कृपया लोकेशन चुनें। 1, 2, या 3 टाइप करें, या लोकेशन का नाम लिखें।',
+				kannada: 'ದಯವಿಟ್ಟು ಸ್ಥಳವನ್ನು ಆಯ್ಕೆಮಾಡಿ. 1, 2, ಅಥವಾ 3 ಅನ್ನು ಟೈಪ್ ಮಾಡಿ ಅಥವಾ ಸ್ಥಳದ ಹೆಸರು ಬರೆಯಿರಿ.',
+				marathi: 'कृपया लोकेशन निवडा. 1, 2, किंवा 3 टाइप करा, किंवा लोकेशनचे नाव लिहा.'
+			};
+			return messages[userLang] || messages.english;
     }
     
     session.data.testDriveLocation = location;
@@ -1149,8 +1177,16 @@ Please type the number (1-4) or language name.`;
     const car = session.data.testDriveCar;
     const carName = `${car.brand || car.make} ${car.model} ${car.variant || ''}`.trim();
     const confirmationId = `TD-${Date.now().toString().slice(-6)}`;
-    
-    return `🎉 **Test Drive Confirmed!**\n\n📋 **Booking Details:**\n• **Car:** ${carName}\n• **Customer:** ${session.data.customerName}\n• **Phone:** ${session.data.customerPhone}\n• **Location:** ${location}\n• **Confirmation ID:** ${confirmationId}\n• **Date:** Tomorrow (11:00 AM - 12:00 PM)\n\n✅ **You'll receive a confirmation message shortly!**\n\nIs there anything else I can help you with?`;
+		const isHinglish = /[a-zA-Z]/.test(input) && /[हिंदीकन्नडमराठी]/.test(input) || /(confirm|book|ho gaya|details)/i.test(input);
+		const messages = {
+			english: `🎉 **Test Drive Confirmed!**\n\n📋 **Booking Details:**\n• **Car:** ${carName}\n• **Customer:** ${session.data.customerName}\n• **Phone:** ${session.data.customerPhone}\n• **Location:** ${location}\n• **Confirmation ID:** ${confirmationId}\n• **Date:** Tomorrow (11:00 AM - 12:00 PM)\n\n✅ **You'll receive a confirmation message shortly!**\n\nIs there anything else I can help you with?`,
+			hindi: isHinglish
+				? `🎉 Test Drive confirm ho gaya!\n\n📋 Booking Details:\n• Car: ${carName}\n• Customer: ${session.data.customerName}\n• Phone: ${session.data.customerPhone}\n• Location: ${location}\n• Confirmation ID: ${confirmationId}\n• Date: Kal (11:00 AM - 12:00 PM)\n\n✅ Jaldi hi aapko confirmation message mil jayega!\n\nKya aur kisi cheez mein madad karun?`
+				: `🎉 **टेस्ट ड्राइव कन्फर्म हो गया!**\n\n📋 **बुकिंग विवरण:**\n• **कार:** ${carName}\n• **ग्राहक:** ${session.data.customerName}\n• **फोन:** ${session.data.customerPhone}\n• **लोकेशन:** ${location}\n• **कन्फर्मेशन ID:** ${confirmationId}\n• **तारीख:** कल (11:00 AM - 12:00 PM)\n\n✅ **आपको जल्द ही कन्फर्मेशन संदेश मिल जाएगा!**\n\nक्या मैं और किसी तरह मदद कर सकता हूं?`,
+			kannada: `🎉 **ಟೆಸ್ಟ್ ಡ್ರೈವ್ ದೃಢಪಡಿಸಲಾಗಿದೆ!**\n\n📋 **ಬುಕಿಂಗ್ ವಿವರಗಳು:**\n• **ಕಾರ್:** ${carName}\n• **ಗ್ರಾಹಕ:** ${session.data.customerName}\n• **ಫೋನ್:** ${session.data.customerPhone}\n• **ಸ್ಥಳ:** ${location}\n• **ದೃಢೀಕರಣ ID:** ${confirmationId}\n• **ದಿನಾಂಕ:** ನಾಳೆ (11:00 AM - 12:00 PM)\n\n✅ **ತಕ್ಷಣವೇ ನಿಮಗೆ ದೃಢೀಕರಣ ಸಂದೇಶ ಬರುತ್ತದೆ!**\n\nಇನ್ನೇನಾದರೂ ಸಹಾಯ ಬೇಕೆ?`,
+			marathi: `🎉 **टेस्ट ड्राइव कन्फर्म झाले!**\n\n📋 **बुकिंग डिटेल्स:**\n• **कार:** ${carName}\n• **कस्टमर:** ${session.data.customerName}\n• **फोन:** ${session.data.customerPhone}\n• **लोकेशन:** ${location}\n• **कन्फर्मेशन ID:** ${confirmationId}\n• **तारीख:** उद्या (11:00 AM - 12:00 PM)\n\n✅ **लवकरच तुम्हाला कन्फर्मेशन मेसेज मिळेल!**\n\nआणखी काही मदत करू का?`
+		};
+		return messages[userLang] || messages.english;
   }
 
   // Enhanced Test Drive Booking entry with multilingual support
@@ -1181,12 +1217,26 @@ Please type the number (1-4) or language name.`;
   // Test Drive Management entries
   if (['my test drive', 'check my test drive', 'test drive status', 'test drive booking'].includes(lower) || lower.includes('my test drive')) {
     session.state = 'testdrive_check'; session.data = {}; setSession(userId, session);
-    return 'I can help you check your test drive booking. Please provide your phone number or booking ID.';
+		const isHinglish = /[a-zA-Z]/.test(input) && /[हिंदीकन्नडमराठी]/.test(input) || /(booking|status|check|dekh)/i.test(input);
+		const messages = {
+			english: 'I can help you check your test drive booking. Please provide your phone number or booking ID.',
+			hindi: isHinglish ? 'Main aapki test drive booking check kar deta hoon. Kripya apna phone number ya booking ID dein.' : 'मैं आपकी टेस्ट ड्राइव बुकिंग चेक कर सकता हूं। कृपया अपना फोन नंबर या बुकिंग ID दें।',
+			kannada: 'ನಾನು ನಿಮ್ಮ ಟೆಸ್ಟ್ ಡ್ರೈವ್ ಬುಕಿಂಗ್ ಪರಿಶೀಲಿಸಲು ಸಹಾಯ ಮಾಡಬಹುದು. ದಯವಿಟ್ಟು ನಿಮ್ಮ ಫೋನ್ ಸಂಖ್ಯೆ ಅಥವಾ ಬುಕಿಂಗ್ ID ನೀಡಿ.',
+			marathi: 'मी तुमची टेस्ट ड्राइव बुकिंग तपासू शकतो. कृपया तुमचा फोन नंबर किंवा बुकिंग ID द्या.'
+		};
+		return messages[userLang] || messages.english;
   }
 
   if (['cancel test drive', 'cancel my test drive', 'cancel booking'].includes(lower) || lower.includes('cancel test drive')) {
     session.state = 'testdrive_cancel'; session.data = {}; setSession(userId, session);
-    return 'I can help you cancel your test drive booking. Please provide your phone number or booking ID.';
+		const isHinglish = /[a-zA-Z]/.test(input) && /[हिंदीकन्नडमराठी]/.test(input) || /(cancel|booking|band|radd)/i.test(input);
+		const messages = {
+			english: 'I can help you cancel your test drive booking. Please provide your phone number or booking ID.',
+			hindi: isHinglish ? 'Main aapki test drive booking cancel karne mein madad karunga. Kripya phone number ya booking ID dein.' : 'मैं आपकी टेस्ट ड्राइव बुकिंग रद्द करने में मदद कर सकता हूं। कृपया फोन नंबर या बुकिंग ID दें।',
+			kannada: 'ನಾನು ನಿಮ್ಮ ಟೆಸ್ಟ್ ಡ್ರೈವ್ ಬುಕಿಂಗ್ ರದ್ದುಪಡಿಸಲು ಸಹಾಯ ಮಾಡುತ್ತೇನೆ. ದಯವಿಟ್ಟು ನಿಮ್ಮ ಫೋನ್ ಸಂಖ್ಯೆ ಅಥವಾ ಬುಕಿಂಗ್ ID ನೀಡಿ.',
+			marathi: 'मी तुमची टेस्ट ड्राइव बुकिंग रद्द करण्यात मदत करेन. कृपया फोन नंबर किंवा बुकिंग ID द्या.'
+		};
+		return messages[userLang] || messages.english;
   }
 
   // Enhanced test drive booking with car selection

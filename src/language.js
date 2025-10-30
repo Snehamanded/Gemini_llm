@@ -9,7 +9,9 @@ const LANGUAGE_PATTERNS = {
     'नमस्ते', 'सर', 'मैं', 'आप', 'कर', 'चाहता', 'चाहती', 'हूँ', 'हैं', 'देख', 'रहा', 'रही', 'लगभग', 'के', 'बीच', 'पेट्रोल', 'डीज़ल',
     'ज़रूर', 'बहुत', 'बढ़िया', 'चुनाव', 'बजट', 'कितना', 'रेंज', 'मॉडल', 'उपलब्ध', 'वेरिएंट', 'बिल्कुल', 'टेस्ट', 'ड्राइव', 'पहले',
     'दिखा', 'दीजिए', 'तुरंत', 'गाड़ी', 'तैयार', 'करवाता', 'वैसे', 'ड्राइविंग', 'लाइसेंस', 'आइए', 'रही', 'बाद', 'ऑफ़र', 'जानकारी',
-    'दे', 'दूँगा', 'ठीक', 'धन्यवाद', 'स्वागत', 'हाँ', 'जी', 'ज़रूर', 'पेट्रोल', 'ही', 'चाहिए', 'दिखा', 'दीजिए',
+    'दे', 'दूँगा', 'ठीक', 'धन्यवाद', 'स्वागत', 'हाँ', 'जी', 'ज़रूर', 'पेट्रोल', 'ही', 'चाहिए', 'दिखा', 'दीजिए'
+  ],
+  hinglish: [
     // Hinglish patterns (Hindi words in English script)
     'namaste', 'main', 'ek', 'khareedna', 'chahta', 'hoon', 'haan', 'dekh', 'raha', 'tha',
     'lagbhag', 'se', 'lakh', 'ke', 'beech', 'petrol', 'hi', 'chahiye', 'zaroor', 'pehle', 'dikha', 'dijiye',
@@ -17,7 +19,7 @@ const LANGUAGE_PATTERNS = {
     'koi', 'khaas', 'brand', 'ya', 'model', 'bahut', 'badhiya', 'chunaav', 'budget', 'kitna', 'range',
     'hamare', 'paas', 'model', 'dono', 'uplabdh', 'variant', 'chahte', 'bilkul', 'test', 'drive', 'lena',
     'chahenge', 'turant', 'gaadi', 'tayyar', 'karwata', 'waise', 'driving', 'license', 'aaiye', 'rahi',
-    'baad', 'emi', 'offer', 'poori', 'jankari', 'de', 'doonga'
+    'baad', 'emi', 'offer', 'poori', 'jankari', 'de', 'doonga', 'aap', 'hain', 'hun', 'rahi', 'liye', 'tak'
   ],
   kannada: [
     'ಕನ್ನಡ', 'ನಾನು', 'ನೀವು', 'ಅವರು', 'ಅವಳು', 'ಅದು', 'ಇದು', 'ಅಲ್ಲಿ', 'ಇಲ್ಲಿ', 'ಅವರ', 'ಅವಳ', 'ಅದರ', 'ಇದರ', 'ಅವರಿಗೆ', 'ಅವಳಿಗೆ', 'ಅದಕ್ಕೆ', 'ಇದಕ್ಕೆ', 'ಕಾರು', 'ಖರೀದಿಸಲು', 'ಬಯಸುತ್ತೇನೆ', 'ಬಯಸುತ್ತೀರಿ', 'ಆಗಿದೆ', 'ಆಗುತ್ತದೆ', 'ಆಗುತ್ತೇನೆ', 'ಆಗುತ್ತೀರಿ', 'ಎಷ್ಟು', 'ಎಲ್ಲಿ', 'ಎಂದು', 'ಏನು', 'ಹೇಗೆ', 'ಯಾವುದು', 'ಯಾರು', 'ಏಕೆ'
@@ -151,6 +153,22 @@ const TRANSLATIONS = {
 };
 
 /**
+ * Check if text contains Hinglish patterns
+ */
+export function isHinglish(text) {
+  if (!text || typeof text !== 'string') return false;
+  
+  const lowerText = text.toLowerCase();
+  const hinglishMatches = LANGUAGE_PATTERNS.hinglish.filter(pattern => lowerText.includes(pattern)).length;
+  
+  // Check for mixed script (English letters + Hindi words)
+  const hasEnglishLetters = /[a-zA-Z]/.test(text);
+  const hasHinglishPatterns = hinglishMatches >= 2;
+  
+  return hasEnglishLetters && hasHinglishPatterns;
+}
+
+/**
  * Detect language from input text
  */
 export function detectLanguage(text) {
@@ -172,17 +190,11 @@ export function detectLanguage(text) {
   }
   
   // Enhanced Hinglish detection - check for mixed Hindi-English patterns
-  const hinglishPatterns = [
-    'main', 'ek', 'dekh', 'raha', 'rahi', 'hun', 'hain', 'hai', 'chahta', 'chahti',
-    'chahiye', 'ke', 'liye', 'se', 'tak', 'lakh', 'budget', 'car', 'family',
-    'city', 'mein', 'chalane', 'kam', 'batao', 'details', 'test', 'drive'
-  ];
+  const hinglishMatches = LANGUAGE_PATTERNS.hinglish.filter(pattern => lowerText.includes(pattern)).length;
   
-  const hinglishMatches = hinglishPatterns.filter(pattern => lowerText.includes(pattern)).length;
-  
-  // If we have significant Hinglish patterns, prioritize Hindi
+  // If we have significant Hinglish patterns, prioritize Hinglish
   if (hinglishMatches >= 2) {
-    detectedLang = 'hindi';
+    detectedLang = 'hinglish';
     maxMatches = hinglishMatches;
   }
   
@@ -202,8 +214,8 @@ export function detectLanguage(text) {
   }
   
   // If we already detected Hinglish, don't override with English word ratio
-  if (detectedLang === 'hindi' && hinglishMatches >= 2) {
-    return 'hindi'; // Return as hindi for Hinglish
+  if (detectedLang === 'hinglish' && hinglishMatches >= 2) {
+    return 'hinglish';
   }
   
   // If text is mostly English words, default to English

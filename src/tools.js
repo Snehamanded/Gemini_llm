@@ -716,7 +716,7 @@ export function formatCarListing(car, index = 0) {
 📊 ${mileage}km | 🎨 ${color} | 💰 ${price}`;
 }
 
-export function formatMultipleCars(cars, startIndex = 0) {
+export function formatMultipleCars(cars, startIndex = 0, language = 'english') {
   if (!cars || cars.length === 0) {
     return 'No cars found matching your criteria.';
   }
@@ -729,7 +729,12 @@ export function formatMultipleCars(cars, startIndex = 0) {
   const displayCars = cars.slice(startIndex, startIndex + 5);
   const hasMore = cars.length > startIndex + 5;
   
-  let result = `Found ${cars.length} cars matching your criteria:\n\n`;
+  const headers = {
+    english: `Found ${cars.length} cars matching your criteria:\n\n`,
+    hinglish: `Aapke criteria ke hisaab se ${cars.length} cars mili hain:\n\n`,
+    hindi: `आपके मापदंडों के हिसाब से ${cars.length} कारें मिली हैं:\n\n`
+  };
+  let result = headers[language] || headers.english;
   
   displayCars.forEach((car, index) => {
     result += formatCarListing(car, startIndex + index);
@@ -739,10 +744,20 @@ export function formatMultipleCars(cars, startIndex = 0) {
   });
   
   if (hasMore) {
-    result += '\n\n📱 *Type "show more" to see additional cars*';
+    const moreTexts = {
+      english: '\n\n📱 *Type "show more" to see additional cars*',
+      hinglish: '\n\n📱 *Aur gaadiyan dekhne ke liye "show more" type karein*',
+      hindi: '\n\n📱 *और गाड़ियां देखने के लिए "show more" टाइप करें*'
+    };
+    result += moreTexts[language] || moreTexts.english;
   }
   
-  result += '\n\n💡 **How to select a car:**\n• Type car1, car2, car3, etc.';
+  const footer = {
+    english: '\n\n💡 **How to select a car:**\n• Type car1, car2, car3, etc.',
+    hinglish: '\n\n💡 **Car select kaise karein:**\n• car1, car2, car3, etc. type karein',
+    hindi: '\n\n💡 **कार कैसे चुनें:**\n• car1, car2, car3, आदि टाइप करें'
+  };
+  result += footer[language] || footer.english;
   
   return result;
 }

@@ -3,6 +3,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import { toolRegistry } from './tools.js';
 import { appendTurn, fetchRecentHistory } from './history.js';
 import { getSession, setSession } from './session.js';
+import { isHinglish } from './language.js';
 
 dotenv.config();
 
@@ -80,9 +81,14 @@ export async function handleUserMessage({ userId, message, channel, businessName
     // Try quick response first for immediate feedback
     const quickResponse = generateQuickResponse(message, conversationContext);
     if (quickResponse) {
+      let ensuredQuick = quickResponse;
+      if (isHinglish(message)) {
+        // force Hinglish for quick replies
+        ensuredQuick = await ensureHinglish(genAI.getGenerativeModel({ model: process.env.GEMINI_MODEL || 'gemini-1.5-flash-8b' }), quickResponse);
+      }
       await appendTurn(userId, 'user', message);
-      await appendTurn(userId, 'assistant', quickResponse);
-      return quickResponse;
+      await appendTurn(userId, 'assistant', ensuredQuick);
+      return ensuredQuick;
     }
     
     const modelName = process.env.GEMINI_MODEL || 'gemini-1.5-flash-8b';
@@ -101,7 +107,16 @@ export async function handleUserMessage({ userId, message, channel, businessName
     // Enhanced prompt with context awareness
     const contextPrompt = buildContextAwarePrompt(businessName, toolList, history, message, conversationContext);
 
-    const text = await retryGenerateText(model, contextPrompt);
+    let text = await retryGenerateText(model, contextPrompt);
+    // Convert structured UI payloads to plain text for terminal/Hinglish
+    text = normalizeStructuredResponseToText(text, isHinglish(message) || channel === 'terminal');
+    // Coerce contact/about flows to Hinglish text in terminal/Hinglish
+    text = coerceContactAboutToHinglish(message, channel, text);
+
+    // Ensure Hinglish output if user used Hinglish
+    if (isHinglish(message)) {
+      text = await ensureHinglish(model, text);
+    }
 
     // Ensure text is a string
     const responseText = typeof text === 'string' ? text : JSON.stringify(text);
@@ -135,29 +150,41 @@ export async function handleUserMessage({ userId, message, channel, businessName
         // Use enhanced formatting for filtered car search results
         followUpText = toolResult.formatted;
       } else {
-        // Fallback to AI-generated response
-        followUpText = await retryGenerateText(
+      // Fallback to AI-generated response
+      followUpText = await retryGenerateText(
         model,
         [
           SYSTEM_PROMPT(businessName),
+          isHinglish(message) ? 'IMPORTANT: The user is writing in Hinglish. Respond in Hinglish (Roman Hindi) naturally.' : '',
           `Tool ${maybeJson.tool} result: ${JSON.stringify(toolResult)}`,
-            `Current context: ${JSON.stringify(conversationContext)}`,
-            'Formulate a concise helpful reply to the user using the tool result. Acknowledge any completed actions and ask exactly ONE next best question if relevant.'
-        ].join('\n')
+          `Current context: ${JSON.stringify(conversationContext)}`,
+          'Formulate a concise helpful reply to the user using the tool result. Acknowledge any completed actions and ask exactly ONE next best question if relevant.'
+        ].filter(Boolean).join('\n')
       );
       }
       
-      // Ensure followUpText is a string
-      const finalResponse = typeof followUpText === 'string' ? followUpText : JSON.stringify(followUpText);
+      // Ensure follow-up is Hinglish if needed
+      let ensuredFollowUp = typeof followUpText === 'string' ? followUpText : JSON.stringify(followUpText);
+      ensuredFollowUp = normalizeStructuredResponseToText(ensuredFollowUp, isHinglish(message) || channel === 'terminal');
+      ensuredFollowUp = coerceContactAboutToHinglish(message, channel, ensuredFollowUp);
+      if (isHinglish(message)) {
+        ensuredFollowUp = await ensureHinglish(model, ensuredFollowUp);
+      }
       
       await appendTurn(userId, 'user', message);
-      await appendTurn(userId, 'assistant', finalResponse);
-      return finalResponse;
+      await appendTurn(userId, 'assistant', ensuredFollowUp);
+      return ensuredFollowUp;
     }
 
     await appendTurn(userId, 'user', message);
-    await appendTurn(userId, 'assistant', responseText);
-    return responseText;
+    let ensured = responseText;
+    ensured = normalizeStructuredResponseToText(ensured, isHinglish(message) || channel === 'terminal');
+    ensured = coerceContactAboutToHinglish(message, channel, ensured);
+    if (isHinglish(message)) {
+      ensured = await ensureHinglish(model, ensured);
+    }
+    await appendTurn(userId, 'assistant', ensured);
+    return ensured;
   } catch (err) {
     console.error('Gemini error:', err?.response?.data || err);
     return handleSpecificErrors(err, message);
@@ -248,6 +275,7 @@ CONTEXT-AWARE INSTRUCTIONS:
 
   return [
     SYSTEM_PROMPT(businessName),
+    (isHinglish(message) ? 'IMPORTANT LANGUAGE DIRECTIVE: User is writing in Hinglish. Always respond in Hinglish (Roman Hindi), keep tone natural and friendly.' : ''),
     'Available tools:',
     toolList,
     'How to call a tool: reply EXACTLY in JSON on its own line: {"tool":"name","args":{...}}. Otherwise, respond to the user.',
@@ -279,6 +307,30 @@ async function retryGenerateText(model, prompt, opts = {}) {
   let attempt = 0;
   let delay = initialDelayMs;
   
+  const isNetworkError = (error) => {
+    if (!error) return false;
+    // Undici often throws TypeError: fetch failed with a cause.code
+    const code = error.cause?.code || error.code;
+    const name = error.name || '';
+    const message = String(error.message || '').toLowerCase();
+    const undiciCodes = new Set([
+      'ECONNRESET',
+      'EAI_AGAIN',
+      'ENOTFOUND',
+      'ECONNREFUSED',
+      'ETIMEDOUT',
+      'UND_ERR_CONNECT_TIMEOUT',
+      'UND_ERR_SOCKET',
+      'EHOSTUNREACH',
+      'ENETUNREACH',
+      'CERT_HAS_EXPIRED',
+      'UNABLE_TO_VERIFY_LEAF_SIGNATURE'
+    ]);
+    return (
+      name === 'TypeError' && message.includes('fetch failed')
+    ) || (code && undiciCodes.has(code));
+  };
+
   // eslint-disable-next-line no-constant-condition
   while (true) {
     try {
@@ -286,7 +338,7 @@ async function retryGenerateText(model, prompt, opts = {}) {
       return result.response.text();
     } catch (err) {
       const status = err?.status || err?.response?.status;
-      const isTransient = status === 429 || status === 503 || status === 500 || status === 502;
+      const isTransient = status === 429 || status === 503 || status === 500 || status === 502 || isNetworkError(err);
       const isRateLimit = status === 429;
       
       attempt += 1;
@@ -303,7 +355,9 @@ async function retryGenerateText(model, prompt, opts = {}) {
       
       // For other transient errors, use standard retry logic
       if (isTransient && attempt <= retries) {
-        console.log(`API error ${status}, retrying in ${delay}ms (attempt ${attempt}/${retries})`);
+        const code = err?.cause?.code || err?.code || 'UNKNOWN';
+        const msg = err?.message || 'Transient error';
+        console.log(`API/network error ${status || ''} ${code}: ${msg}. Retrying in ${delay}ms (attempt ${attempt}/${retries})`);
         await new Promise(r => setTimeout(r, delay));
         delay = Math.min(delay * factor, maxDelayMs);
         continue;
@@ -367,13 +421,27 @@ function handleSpecificErrors(error, message) {
   }
   
   // Network errors
-  if (error.code === 'ENOTFOUND' || error.code === 'ECONNREFUSED') {
-    return 'I\'m having trouble connecting to our systems. Please try again or contact us directly.';
+  const netCode = error?.cause?.code || error?.code;
+  if (
+    netCode === 'ENOTFOUND' ||
+    netCode === 'ECONNREFUSED' ||
+    netCode === 'ECONNRESET' ||
+    netCode === 'EAI_AGAIN' ||
+    netCode === 'ENETUNREACH' ||
+    netCode === 'EHOSTUNREACH' ||
+    netCode === 'UND_ERR_CONNECT_TIMEOUT'
+  ) {
+    return 'I\'m having trouble connecting to our systems. Please try again in a moment.';
   }
   
   // Timeout errors
   if (error.code === 'ETIMEDOUT') {
     return 'The request is taking longer than expected. Please try again or contact us for assistance.';
+  }
+
+  // Undici fetch failed (often a transient network/SSL/proxy issue)
+  if (error.name === 'TypeError' && /fetch failed/i.test(String(error.message || ''))) {
+    return 'Network hiccup while contacting our AI service. Please try again.';
   }
   
   // Generic fallback
@@ -383,7 +451,7 @@ function handleSpecificErrors(error, message) {
 // Response templates for common scenarios
 const RESPONSE_TEMPLATES = {
   valuationComplete: (carDetails, valuation) => 
-    `Great! Your ${carDetails.make} ${carDetails.model} valuation is ₹${valuation.low.toLocaleString('en-IN')} - ₹${valuation.high.toLocaleString('en-IN')}. Would you like to book a test drive for the Hyundai i20 you mentioned?`,
+    `₹${valuation.low.toLocaleString('en-IN')} - ₹${valuation.high.toLocaleString('en-IN')}`,
   
   testDriveBooked: (bookingDetails) => 
     `Perfect! Your test drive is confirmed for ${bookingDetails.car} on ${bookingDetails.date} at ${bookingDetails.time}. You'll receive a confirmation message shortly.`,
@@ -404,16 +472,8 @@ function generateQuickResponse(message, context = null) {
   
   // Handle common greetings
   if (lowerMessage.includes('hello') || lowerMessage.includes('hi') || lowerMessage.includes('hey')) {
-    // Check if user is sending Hinglish
-    const isHinglish = /[a-zA-Z]/.test(message) && (
-      message.includes('main') || message.includes('aap') || message.includes('hai') || 
-      message.includes('hain') || message.includes('chahta') || message.includes('chahiye') ||
-      message.includes('dekh') || message.includes('raha') || message.includes('rahi') ||
-      message.includes('hun') || message.includes('ke') || message.includes('liye') ||
-      message.includes('se') || message.includes('tak') || message.includes('lakh')
-    );
-    
-    if (isHinglish) {
+    // Check if user is sending Hinglish using centralized detection
+    if (isHinglish(message)) {
       return 'Namaste! Sherpa Hyundai mein aapka swagat hai! Aaj main aapki kaise madad kar sakta hun?';
     }
     return 'Hello! Welcome to Sherpa Hyundai! How can I help you today?';
@@ -421,15 +481,7 @@ function generateQuickResponse(message, context = null) {
   
   // Handle thank you
   if (lowerMessage.includes('thank') || lowerMessage.includes('thanks')) {
-    const isHinglish = /[a-zA-Z]/.test(message) && (
-      message.includes('main') || message.includes('aap') || message.includes('hai') || 
-      message.includes('hain') || message.includes('chahta') || message.includes('chahiye') ||
-      message.includes('dekh') || message.includes('raha') || message.includes('rahi') ||
-      message.includes('hun') || message.includes('ke') || message.includes('liye') ||
-      message.includes('se') || message.includes('tak') || message.includes('lakh')
-    );
-    
-    if (isHinglish) {
+    if (isHinglish(message)) {
       return 'Aapka dhanyavaad! Aur koi madad chahiye?';
     }
     return 'You\'re welcome! Is there anything else I can help you with?';
@@ -437,15 +489,7 @@ function generateQuickResponse(message, context = null) {
   
   // Handle yes/no responses
   if (lowerMessage.includes('yes') || lowerMessage.includes('yeah') || lowerMessage.includes('sure')) {
-    const isHinglish = /[a-zA-Z]/.test(message) && (
-      message.includes('main') || message.includes('aap') || message.includes('hai') || 
-      message.includes('hain') || message.includes('chahta') || message.includes('chahiye') ||
-      message.includes('dekh') || message.includes('raha') || message.includes('rahi') ||
-      message.includes('hun') || message.includes('ke') || message.includes('liye') ||
-      message.includes('se') || message.includes('tak') || message.includes('lakh')
-    );
-    
-    if (isHinglish) {
+    if (isHinglish(message)) {
       if (context && context.pendingActions.includes('test_drive_booking')) {
         return 'Bahut badhiya! Main aapki test drive book karne mein madad karta hun. Aapka preferred date aur time kya hai?';
       }
@@ -459,15 +503,7 @@ function generateQuickResponse(message, context = null) {
   }
   
   if (lowerMessage.includes('no') || lowerMessage.includes('not')) {
-    const isHinglish = /[a-zA-Z]/.test(message) && (
-      message.includes('main') || message.includes('aap') || message.includes('hai') || 
-      message.includes('hain') || message.includes('chahta') || message.includes('chahiye') ||
-      message.includes('dekh') || message.includes('raha') || message.includes('rahi') ||
-      message.includes('hun') || message.includes('ke') || message.includes('liye') ||
-      message.includes('se') || message.includes('tak') || message.includes('lakh')
-    );
-    
-    if (isHinglish) {
+    if (isHinglish(message)) {
       return 'Koi baat nahi! Aur koi madad chahiye?';
     }
     return 'No problem! Is there anything else I can help you with?';
@@ -478,22 +514,100 @@ function generateQuickResponse(message, context = null) {
     const nameMatch = message.match(/name:\s*([^\n]+)/i);
     const phoneMatch = message.match(/phone:\s*([^\n]+)/i);
     if (nameMatch && phoneMatch) {
-      const isHinglish = /[a-zA-Z]/.test(message) && (
-        message.includes('main') || message.includes('aap') || message.includes('hai') || 
-        message.includes('hain') || message.includes('chahta') || message.includes('chahiye') ||
-        message.includes('dekh') || message.includes('raha') || message.includes('rahi') ||
-        message.includes('hun') || message.includes('ke') || message.includes('liye') ||
-        message.includes('se') || message.includes('tak') || message.includes('lakh')
-      );
-      
-      if (isHinglish) {
+      if (isHinglish(message)) {
         return `Dhanyavaad, ${nameMatch[1].trim()}! Main aapka phone number ${phoneMatch[1].trim()} note kar liya hai. Aage kaise madad kar sakta hun?`;
       }
       return `Thank you, ${nameMatch[1].trim()}! I've noted your phone number ${phoneMatch[1].trim()}. How can I help you next?`;
     }
   }
+
+  // Handle explicit test drive mentions
+  if (lowerMessage.includes('test drive')) {
+    if (isHinglish(message)) {
+      return 'Test drive book karne mein madad karta hun. Kaunsi car aur kab chahte hain? (Date/time bataiye)';
+    }
+    return 'I can help you book a test drive. Which car and what date/time works for you?';
+  }
   
   return null; // No quick response available
+}
+
+// Ensure output is Hinglish if user is using Hinglish
+async function ensureHinglish(model, text) {
+  try {
+    const str = typeof text === 'string' ? text : JSON.stringify(text);
+    // Always attempt a rewrite into Hinglish to avoid English leakage
+    const rewritten = await retryGenerateText(
+      model,
+      [
+        'Rewrite the following assistant reply into natural Hinglish (Roman Hindi).',
+        'Keep meaning intact, concise, friendly. Use common Hinglish phrasing.',
+        'Original:',
+        str,
+        'Rewritten (Hinglish):'
+      ].join('\n'),
+      { retries: 2, initialDelayMs: 500, maxDelayMs: 3000 }
+    );
+    return typeof rewritten === 'string' && rewritten.trim() ? rewritten : str;
+  } catch {
+    return typeof text === 'string' ? text : JSON.stringify(text);
+  }
+}
+
+// Convert structured button payloads to plain text; optionally Hinglish phrasing
+function normalizeStructuredResponseToText(raw, preferHinglish = false) {
+  try {
+    const str = typeof raw === 'string' ? raw : JSON.stringify(raw);
+    const obj = JSON.parse(str);
+    if (obj && obj.type === 'buttons' && Array.isArray(obj.buttons)) {
+      const mapTitle = (t) => {
+        if (!preferHinglish) return t;
+        const lower = String(t).toLowerCase();
+        if (lower.includes('call')) return 'Abhi call karein';
+        if (lower.includes('callback')) return 'Callback request karein';
+        if (lower.includes('visit')) return 'Showroom visit karein';
+        if (lower.includes('chat')) return 'Chat shuru karein';
+        return t;
+      };
+      const body = preferHinglish
+        ? 'Team se connect hona chahenge? Niche options me se select karein:'
+        : (obj.bodyText || 'How would you like to get in touch?');
+      const lines = obj.buttons.map((b, idx) => `${idx + 1}. ${mapTitle(b.title || '')}`);
+      return `${body}\n${lines.join('\n')}`;
+    }
+    return str;
+  } catch {
+    return typeof raw === 'string' ? raw : JSON.stringify(raw);
+  }
+}
+
+// For terminal/Hinglish, replace contact/about structured payloads with Hinglish text
+function coerceContactAboutToHinglish(userMessage, channel, rawText) {
+  const preferHing = isHinglish(userMessage) || channel === 'terminal';
+  if (!preferHing) return rawText;
+
+  const messageLower = String(userMessage || '').toLowerCase();
+  const textLower = String(rawText || '').toLowerCase();
+  const wantsContact = /(contact|call|phone|number|address|timing|visit|showroom)/.test(messageLower) || /contact|how would you like to get in touch|visit our showroom/.test(textLower);
+  const wantsAbout = /(about|who are you|brands|dealership|showroom)/.test(messageLower);
+
+  if (wantsContact) {
+    return [
+      'Team se connect hona chahenge? Options:',
+      '1. Abhi call karein: +91-9876543210',
+      '2. Callback request karein (number share karein)',
+      '3. Showroom visit karein: 123 MG Road, Bangalore (10am–7pm, Mon–Sat)'
+    ].join('\n');
+  }
+
+  if (wantsAbout) {
+    return [
+      'Hum Sherpa Hyundai hain — Hyundai cars ke liye sales, test drives, financing aur service sab available.',
+      'Aap kaunsi car dekh rahe hain? Main details share kar deta hun.'
+    ].join('\n');
+  }
+
+  return rawText;
 }
 
 
