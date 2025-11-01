@@ -14,12 +14,13 @@ const LANGUAGE_PATTERNS = {
   hinglish: [
     // Hinglish patterns (Hindi words in English script)
     'namaste', 'main', 'ek', 'khareedna', 'chahta', 'hoon', 'haan', 'dekh', 'raha', 'tha',
-    'lagbhag', 'se', 'lakh', 'ke', 'beech', 'petrol', 'hi', 'chahiye', 'zaroor', 'pehle', 'dikha', 'dijiye',
-    'ji', 'hai', 'theek', 'dhanyavaad', 'swagat', 'sir', 'aapka', 'madad', 'kar', 'sakta', 'kya', 'mann',
+    'lagbhag', 'se', 'lakh', 'ke', 'ka', 'ki', 'ko', 'beech', 'petrol', 'hi', 'chahiye', 'zaroor', 'pehle', 'dikha', 'dijiye',
+    'ji', 'hai', 'hain', 'theek', 'dhanyavaad', 'swagat', 'sir', 'aapka', 'madad', 'kar', 'sakta', 'kya', 'mann',
     'koi', 'khaas', 'brand', 'ya', 'model', 'bahut', 'badhiya', 'chunaav', 'budget', 'kitna', 'range',
     'hamare', 'paas', 'model', 'dono', 'uplabdh', 'variant', 'chahte', 'bilkul', 'test', 'drive', 'lena',
     'chahenge', 'turant', 'gaadi', 'tayyar', 'karwata', 'waise', 'driving', 'license', 'aaiye', 'rahi',
-    'baad', 'emi', 'offer', 'poori', 'jankari', 'de', 'doonga', 'aap', 'hain', 'hun', 'rahi', 'liye', 'tak'
+    'baad', 'emi', 'offer', 'poori', 'jankari', 'de', 'doonga', 'aap', 'hain', 'hun', 'rahi', 'liye', 'tak',
+    'batao', 'batayein', 'deta', 'deti', 'hoga', 'hogi', 'hogey', 'details', 'mujhe', 'apni', 'apna', 'apne'
   ],
   kannada: [
     'ಕನ್ನಡ', 'ನಾನು', 'ನೀವು', 'ಅವರು', 'ಅವಳು', 'ಅದು', 'ಇದು', 'ಅಲ್ಲಿ', 'ಇಲ್ಲಿ', 'ಅವರ', 'ಅವಳ', 'ಅದರ', 'ಇದರ', 'ಅವರಿಗೆ', 'ಅವಳಿಗೆ', 'ಅದಕ್ಕೆ', 'ಇದಕ್ಕೆ', 'ಕಾರು', 'ಖರೀದಿಸಲು', 'ಬಯಸುತ್ತೇನೆ', 'ಬಯಸುತ್ತೀರಿ', 'ಆಗಿದೆ', 'ಆಗುತ್ತದೆ', 'ಆಗುತ್ತೇನೆ', 'ಆಗುತ್ತೀರಿ', 'ಎಷ್ಟು', 'ಎಲ್ಲಿ', 'ಎಂದು', 'ಏನು', 'ಹೇಗೆ', 'ಯಾವುದು', 'ಯಾರು', 'ಏಕೆ'
@@ -159,11 +160,48 @@ export function isHinglish(text) {
   if (!text || typeof text !== 'string') return false;
   
   const lowerText = text.toLowerCase();
-  const hinglishMatches = LANGUAGE_PATTERNS.hinglish.filter(pattern => lowerText.includes(pattern)).length;
+  
+  // Use word boundary matching to avoid false positives (e.g., "se" in "used")
+  const hinglishPatterns = LANGUAGE_PATTERNS.hinglish.filter(pattern => {
+    // For short patterns (1-2 chars), require word boundaries to avoid substring matches
+    if (pattern.length <= 2) {
+      const regex = new RegExp(`\\b${pattern}\\b`, 'i');
+      return regex.test(text);
+    }
+    // For longer patterns, substring matching is OK
+    return lowerText.includes(pattern);
+  });
+  const hinglishMatches = hinglishPatterns.length;
   
   // Check for mixed script (English letters + Hindi words)
   const hasEnglishLetters = /[a-zA-Z]/.test(text);
-  const hasHinglishPatterns = hinglishMatches >= 2;
+  const hasDevanagari = /[हिंदीकन्नडमराठी]/.test(text);
+  
+  // If Devanagari script is present, it's Hindi, not Hinglish
+  if (hasDevanagari) return false;
+  
+  // Check for clear English phrases that indicate English
+  const englishPhrases = [
+    'i need', 'i want', 'i have', 'i am', 'do you have', 'do you', 'looking for',
+    'used car', 'used cars', 'budget of', 'budget is', 'test drive', 'thank you',
+    'can you', 'could you', 'what are', 'which', 'how much'
+  ];
+  const hasEnglishPhrase = englishPhrases.some(phrase => lowerText.includes(phrase));
+  const englishPhraseCount = englishPhrases.filter(phrase => lowerText.includes(phrase)).length;
+  
+  // If multiple English phrases present, it's definitely English
+  if (englishPhraseCount >= 2) {
+    return false;
+  }
+  
+  // If clear English phrases present and low Hinglish matches, it's English
+  if (hasEnglishPhrase && hinglishMatches < 3) {
+    return false;
+  }
+  
+  // Require at least 3 Hinglish patterns to be confident it's Hinglish
+  // This prevents false positives from English sentences
+  const hasHinglishPatterns = hinglishMatches >= 3;
   
   return hasEnglishLetters && hasHinglishPatterns;
 }
@@ -190,16 +228,55 @@ export function detectLanguage(text) {
   }
   
   // Enhanced Hinglish detection - check for mixed Hindi-English patterns
-  const hinglishMatches = LANGUAGE_PATTERNS.hinglish.filter(pattern => lowerText.includes(pattern)).length;
+  // Use word boundary matching to avoid false positives (e.g., "se" in "used")
+  const hinglishPatterns = LANGUAGE_PATTERNS.hinglish.filter(pattern => {
+    // For short patterns (1-2 chars), require word boundaries to avoid substring matches
+    if (pattern.length <= 2) {
+      const regex = new RegExp(`\\b${pattern}\\b`, 'i');
+      return regex.test(text);
+    }
+    // For longer patterns, substring matching is OK
+    return lowerText.includes(pattern);
+  });
+  const hinglishMatches = hinglishPatterns.length;
   
-  // If we have significant Hinglish patterns, prioritize Hinglish
-  if (hinglishMatches >= 2) {
+  // Check for common English phrases FIRST - these should always be English
+  // This prevents false positives from Hinglish pattern matching
+  const englishPhrases = [
+    'i need', 'i want', 'i have', 'i am', 'i would', 'i can', 'i will',
+    'looking for', 'show me', 'find me', 'help me', 'do you have', 'do you',
+    'family of', 'members', 'used car', 'new car', 'used cars', 'budget of', 'budget is',
+    'test drive', 'book', 'contact', 'about', 'service', 'financing',
+    'what are', 'which', 'how much', 'can you', 'could you', 'please',
+    'are there', 'is there', 'thank you', 'thanks', 'hello', 'hi', 'under ₹', 'under ₹'
+  ];
+  
+  const hasEnglishPhrase = englishPhrases.some(phrase => lowerText.includes(phrase));
+  const englishPhraseCount = englishPhrases.filter(phrase => lowerText.includes(phrase)).length;
+  
+  // If clear English phrases are present and no Devanagari script, prioritize English
+  // Multiple English phrases strongly indicate English
+  const hasDevanagari = /[हिंदीकन्नडमराठी]/.test(text);
+  if (hasEnglishPhrase && !hasDevanagari) {
+    // If we have multiple English phrases, it's definitely English
+    if (englishPhraseCount >= 2) {
+      return 'english';
+    }
+    // Single English phrase with low Hinglish matches (< 3) is English
+    if (hinglishMatches < 3) {
+      return 'english';
+    }
+  }
+  
+  // If we have significant Hinglish patterns (3+ for stricter detection), prioritize Hinglish
+  if (hinglishMatches >= 3) {
     detectedLang = 'hinglish';
     maxMatches = hinglishMatches;
   }
   
   // Count matches for each language
   for (const [lang, patterns] of Object.entries(LANGUAGE_PATTERNS)) {
+    if (lang === 'hinglish') continue; // Already handled above
     const matches = patterns.filter(pattern => lowerText.includes(pattern)).length;
     if (matches > maxMatches) {
       maxMatches = matches;
@@ -213,30 +290,26 @@ export function detectLanguage(text) {
     return 'english';
   }
   
-  // If we already detected Hinglish, don't override with English word ratio
-  if (detectedLang === 'hinglish' && hinglishMatches >= 2) {
+  // If we already detected Hinglish with high confidence, return it
+  if (detectedLang === 'hinglish' && hinglishMatches >= 3) {
     return 'hinglish';
   }
   
   // If text is mostly English words, default to English
   const englishWords = lowerText.split(/\s+/).filter(word => 
-    /^[a-z]+$/.test(word) && word.length > 2
+    /^[a-z]+$/.test(word) && word.length > 2 && !LANGUAGE_PATTERNS.hinglish.includes(word)
   );
   const totalWords = lowerText.split(/\s+/).filter(word => word.length > 0);
   
-  if (englishWords.length / totalWords.length > 0.8) {
-    return 'english';
+  if (totalWords.length > 0 && englishWords.length / totalWords.length > 0.7) {
+    // High ratio of English words - return English unless strong Hinglish signals
+    if (hinglishMatches < 3 || hasDevanagari) {
+      return 'english';
+    }
   }
   
-  // Check for common English phrases that should always be English
-  const englishPhrases = [
-    'i need', 'i want', 'looking for', 'show me', 'find me', 'help me',
-    'family of', 'members', 'used car', 'new car', 'budget', 'price',
-    'test drive', 'book', 'contact', 'about', 'service', 'financing'
-  ];
-  
-  const hasEnglishPhrase = englishPhrases.some(phrase => lowerText.includes(phrase));
-  if (hasEnglishPhrase && maxMatches < 2) {
+  // Final check: if English phrases present but low Hinglish matches, it's English
+  if (hasEnglishPhrase && hinglishMatches < 3) {
     return 'english';
   }
   

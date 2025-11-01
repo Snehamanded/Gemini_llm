@@ -66,6 +66,12 @@ RESPONSE PATTERNS:
 
 export async function handleUserMessage({ userId, message, channel, businessName }) {
   try {
+    // Get user's language preference from session (determined by detectLanguage in flows.js)
+    const { getSession } = await import('./session.js');
+    const session = getSession(userId);
+    const userLanguagePreference = session.data?.language || (isHinglish(message) ? 'hinglish' : 'english');
+    const shouldRespondInHinglish = userLanguagePreference === 'hinglish' || isHinglish(message);
+    
     // FIRST: Check deterministic flows (this handles session states)
     const { handleDeterministicFlows } = await import('./flows.js');
     const deterministicResponse = await handleDeterministicFlows(userId, message);
@@ -82,8 +88,8 @@ export async function handleUserMessage({ userId, message, channel, businessName
     const quickResponse = generateQuickResponse(message, conversationContext);
     if (quickResponse) {
       let ensuredQuick = quickResponse;
-      if (isHinglish(message)) {
-        // force Hinglish for quick replies
+      if (shouldRespondInHinglish) {
+        // force Hinglish for quick replies if user prefers Hinglish
         ensuredQuick = await ensureHinglish(genAI.getGenerativeModel({ model: process.env.GEMINI_MODEL || 'gemini-1.5-flash-8b' }), quickResponse);
       }
       await appendTurn(userId, 'user', message);
@@ -104,17 +110,17 @@ export async function handleUserMessage({ userId, message, channel, businessName
       .map(t => (t.role === 'user' ? `User: ${t.content}` : `Assistant: ${t.content}`))
       .join('\n');
 
-    // Enhanced prompt with context awareness
-    const contextPrompt = buildContextAwarePrompt(businessName, toolList, history, message, conversationContext);
+    // Enhanced prompt with context awareness - use session language preference
+    const contextPrompt = buildContextAwarePrompt(businessName, toolList, history, message, conversationContext, shouldRespondInHinglish);
 
     let text = await retryGenerateText(model, contextPrompt);
     // Convert structured UI payloads to plain text for terminal/Hinglish
-    text = normalizeStructuredResponseToText(text, isHinglish(message) || channel === 'terminal');
+    text = normalizeStructuredResponseToText(text, shouldRespondInHinglish || channel === 'terminal');
     // Coerce contact/about flows to Hinglish text in terminal/Hinglish
     text = coerceContactAboutToHinglish(message, channel, text);
 
-    // Ensure Hinglish output if user used Hinglish
-    if (isHinglish(message)) {
+    // Ensure Hinglish output if user prefers Hinglish
+    if (shouldRespondInHinglish) {
       text = await ensureHinglish(model, text);
     }
 
@@ -151,11 +157,14 @@ export async function handleUserMessage({ userId, message, channel, businessName
         followUpText = toolResult.formatted;
       } else {
       // Fallback to AI-generated response
+      const languagePrompt = shouldRespondInHinglish 
+        ? 'IMPORTANT: The user prefers Hinglish. Respond in Hinglish (Roman Hindi) naturally.'
+        : 'IMPORTANT: The user prefers English. Respond in clear, friendly English.';
       followUpText = await retryGenerateText(
         model,
         [
           SYSTEM_PROMPT(businessName),
-          isHinglish(message) ? 'IMPORTANT: The user is writing in Hinglish. Respond in Hinglish (Roman Hindi) naturally.' : '',
+          languagePrompt,
           `Tool ${maybeJson.tool} result: ${JSON.stringify(toolResult)}`,
           `Current context: ${JSON.stringify(conversationContext)}`,
           'Formulate a concise helpful reply to the user using the tool result. Acknowledge any completed actions and ask exactly ONE next best question if relevant.'
@@ -163,11 +172,11 @@ export async function handleUserMessage({ userId, message, channel, businessName
       );
       }
       
-      // Ensure follow-up is Hinglish if needed
+      // Ensure follow-up uses correct language preference
       let ensuredFollowUp = typeof followUpText === 'string' ? followUpText : JSON.stringify(followUpText);
-      ensuredFollowUp = normalizeStructuredResponseToText(ensuredFollowUp, isHinglish(message) || channel === 'terminal');
+      ensuredFollowUp = normalizeStructuredResponseToText(ensuredFollowUp, shouldRespondInHinglish || channel === 'terminal');
       ensuredFollowUp = coerceContactAboutToHinglish(message, channel, ensuredFollowUp);
-      if (isHinglish(message)) {
+      if (shouldRespondInHinglish) {
         ensuredFollowUp = await ensureHinglish(model, ensuredFollowUp);
       }
       
@@ -178,9 +187,9 @@ export async function handleUserMessage({ userId, message, channel, businessName
 
     await appendTurn(userId, 'user', message);
     let ensured = responseText;
-    ensured = normalizeStructuredResponseToText(ensured, isHinglish(message) || channel === 'terminal');
+    ensured = normalizeStructuredResponseToText(ensured, shouldRespondInHinglish || channel === 'terminal');
     ensured = coerceContactAboutToHinglish(message, channel, ensured);
-    if (isHinglish(message)) {
+    if (shouldRespondInHinglish) {
       ensured = await ensureHinglish(model, ensured);
     }
     await appendTurn(userId, 'assistant', ensured);
@@ -193,13 +202,18 @@ export async function handleUserMessage({ userId, message, channel, businessName
 
 async function getConversationContext(userId) {
   const historyRows = await fetchRecentHistory(userId, 10);
+  const { getSession } = await import('./session.js');
+  const session = getSession(userId);
+  
   const context = {
+    userId: userId, // Add userId for session access
     currentIntent: null,
     completedActions: [],
     pendingActions: [],
     carDetails: null,
     customerInfo: null,
-    lastToolUsed: null
+    lastToolUsed: null,
+    sessionState: session?.state || null // Include session state in context
   };
 
   // Analyze recent conversation to determine context
@@ -221,6 +235,10 @@ async function getConversationContext(userId) {
       context.completedActions.push('comparison_requested');
     }
     
+    if (content.includes('car') && (content.includes('search') || content.includes('looking') || content.includes('need'))) {
+      context.currentIntent = 'car_search';
+    }
+    
     // Extract car details
     const carMatch = content.match(/(\w+)\s+(\w+)/);
     if (carMatch) {
@@ -230,6 +248,11 @@ async function getConversationContext(userId) {
     // Extract customer info
     if (content.includes('name:') || content.includes('phone:')) {
       context.customerInfo = 'provided';
+    }
+    
+    // Check for tool usage in assistant responses
+    if (row.role === 'assistant' && content.includes('car') && content.includes('found')) {
+      context.lastToolUsed = 'searchInventory';
     }
   }
 
@@ -257,7 +280,7 @@ async function updateConversationContext(userId, toolName, toolResult) {
   setSession(userId, session);
 }
 
-function buildContextAwarePrompt(businessName, toolList, history, message, context) {
+function buildContextAwarePrompt(businessName, toolList, history, message, context, shouldRespondInHinglish = false) {
   const contextInfo = context ? `
 CONVERSATION CONTEXT:
 - Current Intent: ${context.currentIntent || 'general'}
@@ -273,9 +296,13 @@ CONTEXT-AWARE INSTRUCTIONS:
 - Ask only ONE relevant question at a time
 ` : '';
 
+  const languageDirective = shouldRespondInHinglish 
+    ? 'IMPORTANT LANGUAGE DIRECTIVE: The user prefers Hinglish. Always respond in Hinglish (Roman Hindi), keep tone natural and friendly. Use phrases like "main", "aap", "hai", "hain", "chahta", "chahiye", "dekh", "raha", etc.'
+    : 'IMPORTANT LANGUAGE DIRECTIVE: The user prefers English. Always respond in clear, friendly English.';
+
   return [
     SYSTEM_PROMPT(businessName),
-    (isHinglish(message) ? 'IMPORTANT LANGUAGE DIRECTIVE: User is writing in Hinglish. Always respond in Hinglish (Roman Hindi), keep tone natural and friendly.' : ''),
+    languageDirective,
     'Available tools:',
     toolList,
     'How to call a tool: reply EXACTLY in JSON on its own line: {"tool":"name","args":{...}}. Otherwise, respond to the user.',
@@ -467,17 +494,24 @@ const RESPONSE_TEMPLATES = {
 };
 
 // Quick response generator for common patterns
-function generateQuickResponse(message, context = null) {
+async function generateQuickResponse(message, context = null) {
   const lowerMessage = message.toLowerCase();
   
-  // Handle common greetings
-  if (lowerMessage.includes('hello') || lowerMessage.includes('hi') || lowerMessage.includes('hey')) {
+  // Handle common greetings - but only if it's a standalone greeting, not part of a question
+  // Check if message is ONLY a greeting (not a question containing greeting words)
+  const isStandaloneGreeting = /^(hi|hello|hey|namaste|namaskar)[\s!.,]*$/i.test(message.trim()) || 
+                                (/^(hi|hello|hey)[\s,]+(there|you)[\s!.,]*$/i.test(message.trim()));
+  
+  if (isStandaloneGreeting) {
     // Check if user is sending Hinglish using centralized detection
     if (isHinglish(message)) {
       return 'Namaste! Sherpa Hyundai mein aapka swagat hai! Aaj main aapki kaise madad kar sakta hun?';
     }
     return 'Hello! Welcome to Sherpa Hyundai! How can I help you today?';
   }
+  
+  // Don't treat questions containing greeting words as greetings
+  // (e.g., "Which SUV would be good for camping trips?" should not trigger greeting)
   
   // Handle thank you
   if (lowerMessage.includes('thank') || lowerMessage.includes('thanks')) {
@@ -487,19 +521,58 @@ function generateQuickResponse(message, context = null) {
     return 'You\'re welcome! Is there anything else I can help you with?';
   }
   
-  // Handle yes/no responses
-  if (lowerMessage.includes('yes') || lowerMessage.includes('yeah') || lowerMessage.includes('sure')) {
-    if (isHinglish(message)) {
-      if (context && context.pendingActions.includes('test_drive_booking')) {
-        return 'Bahut badhiya! Main aapki test drive book karne mein madad karta hun. Aapka preferred date aur time kya hai?';
+  // Handle yes/no responses - check session state for context
+  if (lowerMessage.includes('yes') || lowerMessage.includes('yeah') || lowerMessage.includes('sure') || lowerMessage.includes('haan') || lowerMessage.includes('haanji')) {
+    // Import session to check state (already available in context if provided)
+    const { getSession } = await import('./session.js');
+    const session = context?.userId ? getSession(context.userId) : null;
+    
+    // Check what the user is saying yes to based on session state
+    if (session?.state === 'testdrive_car') {
+      // User might be confirming they want to book a test drive
+      if (isHinglish(message)) {
+        return 'Bahut badhiya! Kaunsi car ke liye test drive book karna chahte hain? Car ka naam bataiye.';
       }
-      return 'Perfect! Main aapki aur kaise madad kar sakta hun?';
+      return 'Great! Which car would you like to test drive? Please provide the car name.';
+    }
+    
+    if (session?.state === 'browse_pick_type' || session?.state === 'browse_budget') {
+      // User might be confirming something in car search flow
+      if (isHinglish(message)) {
+        return 'Achha! Car search continue karte hain. Aapko kaunsi type ki car chahiye?';
+      }
+      return 'Good! Let\'s continue with the car search. What type of car are you looking for?';
     }
     
     if (context && context.pendingActions.includes('test_drive_booking')) {
+      if (isHinglish(message)) {
+        return 'Bahut badhiya! Main aapki test drive book karne mein madad karta hun. Aapka preferred date aur time kya hai?';
+      }
       return 'Great! Let me help you book a test drive. What\'s your preferred date and time?';
     }
-    return 'Perfect! How can I assist you further?';
+    
+    // Check if we just showed car details or search results
+    if (context?.lastToolUsed === 'searchInventory' || context?.currentIntent === 'car_search') {
+      if (isHinglish(message)) {
+        return 'Achha! Kya aap inme se koi car select karna chahte hain, ya aur details chahiye?';
+      }
+      return 'Good! Would you like to select one of these cars, or do you need more details?';
+    }
+    
+    // Generic yes response - check if we're in middle of a flow
+    // If in a flow, provide more helpful context
+    if (session?.state) {
+      if (isHinglish(message)) {
+        return 'Achha! Aage kaise madad karun? Aapke current request ke baare mein kuch aur jaanana chahte hain?';
+      }
+      return 'Sure! Would you like to continue with your current request, or is there something else I can help with?';
+    }
+    
+    // No active flow - ask what they need help with
+    if (isHinglish(message)) {
+      return 'Achha! Main aapki kaise madad kar sakta hun? Kya aap car search, test drive booking, ya kuch aur chahte hain?';
+    }
+    return 'Sure! How can I help you? Are you looking to search for a car, book a test drive, or something else?';
   }
   
   if (lowerMessage.includes('no') || lowerMessage.includes('not')) {

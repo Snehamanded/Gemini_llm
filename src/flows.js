@@ -1,5 +1,5 @@
 import { getSession, setSession } from './session.js';
-import { detectLanguage, getTranslation, translateResponse } from './language.js';
+import { detectLanguage, getTranslation, translateResponse, isHinglish as checkIsHinglish } from './language.js';
 
 const contactMenu = () => ({
   type: 'buttons',
@@ -91,10 +91,40 @@ export async function handleDeterministicFlows(userId, text) {
   const lower = input.toLowerCase();
   const session = getSession(userId);
   
+  // Handle restart/reset commands and greetings - MUST be checked first before any state checks
+  // This allows users to restart conversation at any time by saying hi, hello, restart, etc.
+  const isRestartCommand = /^(hi|hello|hey|restart|reset|start over)$/i.test(input.trim()) || 
+                           lower.includes('restart') || lower.includes('reset') || lower.includes('start over');
+  
+  if (isRestartCommand) {
+    // Preserve language preference before clearing session
+    const preservedLang = session.data?.language || 'english';
+    
+    // Clear session state completely (but preserve language preference)
+    session.state = null;
+    session.data = { language: preservedLang };
+    setSession(userId, session);
+    
+    // Return greeting based on preserved language
+    const greetingMessages = {
+      english: 'Hello! Welcome to Sherpa Hyundai! How can I help you today?',
+      hinglish: 'Namaste! Sherpa Hyundai mein aapka swagat hai! Aaj main aapki kaise madad kar sakta hun?',
+      hindi: 'नमस्ते! शेरपा हुंडई में आपका स्वागत है! आज मैं आपकी कैसे मदद कर सकता हूं?',
+      kannada: 'ನಮಸ್ಕಾರ! ಶೆರ್ಪಾ ಹುಂಡೈಗೆ ಸ್ವಾಗತ! ಇಂದು ನಾನು ನಿಮಗೆ ಹೇಗೆ ಸಹಾಯ ಮಾಡಬಹುದು?',
+      marathi: 'नमस्कार! शेरपा हुंडईमध्ये आपले स्वागत आहे! आज मी तुमची कशी मदत करू शकतो?'
+    };
+    return greetingMessages[preservedLang] || greetingMessages.english;
+  }
+  
   // Enhanced context retention - don't restart conversation if user is in middle of a flow
-  if (session.state && !lower.includes('hi') && !lower.includes('hello') && !lower.includes('start over') && !lower.includes('reset')) {
+  // IMPORTANT: If user has an active session state, don't treat any input as restart unless explicitly requested
+  if (session.state && session.state !== 'null' && 
+      !isRestartCommand && 
+      !lower.includes('hi') && !lower.includes('hello') && !lower.includes('start over') && 
+      !lower.includes('reset') && !lower.includes('restart')) {
     // Continue with existing flow instead of restarting
     // This prevents the bot from restarting conversations unexpectedly
+    // All state-specific handlers below will process the input
   }
   
   // Detect language and set user preference using centralized detection
@@ -150,6 +180,21 @@ export async function handleDeterministicFlows(userId, text) {
   // Define correctedLower for use throughout the function
   const correctedLower = correctedInput.toLowerCase();
   
+  // Helper function to extract budget from message (defined early for use in car buying intent)
+  const extractBudgetFromMessage = () => {
+    // Handle various lakh patterns with fuzzy spelling
+    const lakhs = correctedInput.match(/(\d+[\.]?\d*)\s*(lakh|lakhs|lak|laks|laksh)/i);
+    const below = /(under|below|upto|up to|less than)\s*(?:₹)?\s*(\d+[\.]?\d*)\s*(lakh|lakhs|lak|laks|laksh)/i.exec(correctedLower);
+    const belowNumeric = /(under|below|upto|up to|less than)\s*(?:₹)?\s*(\d{5,12})/i.exec(correctedInput.replace(/[,₹\s]/g, ''));
+    const numeric = correctedInput.replace(/[,₹\s]/g, '').match(/(\d{5,12})/);
+    
+    if (below) return Math.round(parseFloat(below[2]) * 100000);
+    if (belowNumeric) return Number(belowNumeric[2]);
+    if (lakhs) return Math.round(parseFloat(lakhs[1]) * 100000);
+    if (numeric) return Number(numeric[1]);
+    return null;
+  };
+  
   if (!session.state && (
     lower.includes('कार खरीदना') || lower.includes('कार खरीद') || lower.includes('कार') ||
     lower.includes('ಕಾರು ಖರೀದಿಸಲು') || lower.includes('ಕಾರು') || lower.includes('ಕಾರು ಹುಡುಕಿ') ||
@@ -161,9 +206,33 @@ export async function handleDeterministicFlows(userId, text) {
     // Enhanced patterns for better intent recognition
     lower.includes('need a used car') || lower.includes('looking for a vehicle') || 
     lower.includes('suitable for my family') || lower.includes('family of') ||
-    lower.includes('vehicle under') || lower.includes('car under')
+    lower.includes('vehicle under') || lower.includes('car under') ||
+    lower.includes('used cars under') || lower.includes('cars under') || lower.includes('cars below') ||
+    lower.includes('cars around') || lower.includes('show me cars') || lower.includes('can you show') ||
+    lower.includes('do you have') && lower.includes('car')
   )) {
     session.data = session.data || {};
+    
+    // Try to extract budget from the message first
+    const extractedBudget = extractBudgetFromMessage();
+    if (extractedBudget) {
+      session.data.maxPrice = extractedBudget;
+      session.data.minPrice = 0;
+      session.state = 'browse_pick_type';
+      setSession(userId, session);
+      
+      const typeMessages = {
+        english: `Great! Budget up to ₹${extractedBudget.toLocaleString('en-IN')}.\nPick a body type: Hatchback | MPV | SUV | Sedan\nOr type "any type" to see all types.`,
+        hinglish: `Bahut badhiya! Budget up to ₹${extractedBudget.toLocaleString('en-IN')}.\nBody type choose karein: Hatchback | MPV | SUV | Sedan\nYa "any type" type karein sabhi types ke liye.`,
+        hindi: `बहुत बढ़िया! बजट ₹${extractedBudget.toLocaleString('en-IN')} तक।\nकार का प्रकार चुनें: Hatchback | MPV | SUV | Sedan\nया "any type" टाइप करें सभी प्रकारों के लिए।`,
+        kannada: `ಚೆನ್ನಾಗಿದೆ! ಬಜೆಟ್ ₹${extractedBudget.toLocaleString('en-IN')} ವರೆಗೆ।\nಬಾಡಿ ಪ್ರಕಾರವನ್ನು ಆಯ್ಕೆಮಾಡಿ: Hatchback | MPV | SUV | Sedan\nಅಥವಾ ಎಲ್ಲಾ ಪ್ರಕಾರಗಳಿಗೆ "any type" ಟೈಪ್ ಮಾಡಿ।`,
+        marathi: `छान! बजेट ₹${extractedBudget.toLocaleString('en-IN')} पर्यंत।\nकारचा प्रकार निवडा: Hatchback | MPV | SUV | Sedan\nकिंवा सर्व प्रकारांसाठी "any type" टाइप करा।`
+      };
+      
+      return typeMessages[userLang] || typeMessages.english;
+    }
+    
+    // If no budget found, ask for it
     session.state = 'browse_budget';
     setSession(userId, session);
     
@@ -228,17 +297,18 @@ export async function handleDeterministicFlows(userId, text) {
   }
 
   // Enhanced contact information flow with multilingual support
-  if (['3', 'contact', 'contact our team', 'contact us', 'team', 'showroom', 'address', 'location', 'phone'].includes(lower) ||
-      lower.includes('contact') || lower.includes('showroom') || lower.includes('address') || 
-      lower.includes('location') || lower.includes('phone') || lower.includes('पता') || 
+  // IMPORTANT: Only trigger if NOT in test drive flow (test drive location uses "showroom" keyword)
+  if (!session.state?.startsWith('testdrive') && 
+      (['3', 'contact', 'contact our team', 'contact us', 'team', 'showroom', 'address', 'location', 'phone'].includes(lower) ||
+      lower.includes('contact') || (lower.includes('showroom') && !lower.includes('main showroom') && !lower.includes('test drive')) || lower.includes('address') || 
+      (lower.includes('location') && !lower.includes('test drive')) || lower.includes('phone') || lower.includes('पता') || 
       lower.includes('संपर्क') || lower.includes('शोरूम') || lower.includes('फोन') ||
-      lower.includes('contact janna') || lower.includes('address chahiye') || lower.includes('phone number')) {
+      lower.includes('contact janna') || lower.includes('address chahiye') || lower.includes('phone number'))) {
     session.state = 'contact_menu';
     setSession(userId, session);
     
-    // Check if input is Hinglish
-    const isHinglish = /[a-zA-Z]/.test(input) && /[हिंदीकन्नडमराठी]/.test(input) || 
-                       /(main|aap|hai|hain|chahta|chahti|hoon|hain|dekh|raha|rahi|tha|lagbhag|se|lakh|ke|beech|petrol|hi|chahiye|zaroor|pehle|dikha|dijiye|ji|theek|dhanyavaad|swagat|sir|aapka|madad|kar|sakta|kya|mann|koi|khaas|brand|ya|model|bahut|badhiya|chunaav|budget|kitna|range|hamare|paas|model|dono|uplabdh|variant|chahte|bilkul|test|drive|lena|chahenge|turant|gaadi|tayyar|karwata|waise|driving|license|aaiye|rahi|baad|emi|offer|poori|jankari|de|doonga)/i.test(input);
+    // Check if input is Hinglish using proper detection
+    const isHinglish = checkIsHinglish(input);
     
     const contactMessages = {
       english: contactMenu(),
@@ -257,9 +327,8 @@ export async function handleDeterministicFlows(userId, text) {
     session.state = 'about_menu';
     setSession(userId, session);
     
-    // Check if input is Hinglish
-    const isHinglish = /[a-zA-Z]/.test(input) && /[हिंदीकन्नडमराठी]/.test(input) || 
-                       /(main|aap|hai|hain|chahta|chahti|hoon|hain|dekh|raha|rahi|tha|lagbhag|se|lakh|ke|beech|petrol|hi|chahiye|zaroor|pehle|dikha|dijiye|ji|theek|dhanyavaad|swagat|sir|aapka|madad|kar|sakta|kya|mann|koi|khaas|brand|ya|model|bahut|badhiya|chunaav|budget|kitna|range|hamare|paas|model|dono|uplabdh|variant|chahte|bilkul|test|drive|lena|chahenge|turant|gaadi|tayyar|karwata|waise|driving|license|aaiye|rahi|baad|emi|offer|poori|jankari|de|doonga)/i.test(input);
+    // Check if input is Hinglish using proper detection
+    const isHinglish = checkIsHinglish(input);
     
     if (isHinglish) {
       const aboutMessages = {
@@ -284,9 +353,8 @@ export async function handleDeterministicFlows(userId, text) {
     session.data = {};
     setSession(userId, session);
     
-    // Check if input is Hinglish
-    const isHinglish = /[a-zA-Z]/.test(input) && /[हिंदीकन्नडमराठी]/.test(input) || 
-                       /(main|aap|hai|hain|chahta|chahti|hoon|hain|dekh|raha|rahi|tha|lagbhag|se|lakh|ke|beech|petrol|hi|chahiye|zaroor|pehle|dikha|dijiye|ji|theek|dhanyavaad|swagat|sir|aapka|madad|kar|sakta|kya|mann|koi|khaas|brand|ya|model|bahut|badhiya|chunaav|budget|kitna|range|hamare|paas|model|dono|uplabdh|variant|chahte|bilkul|test|drive|lena|chahenge|turant|gaadi|tayyar|karwata|waise|driving|license|aaiye|rahi|baad|emi|offer|poori|jankari|de|doonga)/i.test(input);
+    // Check if input is Hinglish using proper detection
+    const isHinglish = checkIsHinglish(input);
     
     const insuranceMessages = {
       english: `Great! I'll help you with car insurance information. Please provide:\n\n**Vehicle Details:**\n• Car Model: (e.g., Hyundai i20, Maruti Swift)\n• Year of Purchase: (e.g., 2020, 2021)\n• Current Value: (e.g., ₹8,00,000)\n• Previous Claims: (Yes/No)\n\n**Coverage Type:**\n• Comprehensive (Full Coverage)\n• Third Party (Basic Coverage)\n• Zero Depreciation\n\nPlease share all details in one message.`,
@@ -315,17 +383,16 @@ Please type the number (1-4) or language name.`;
   }
 
   // Enhanced service booking entry with multilingual support
-  if (['book service', 'service booking', 'schedule service', 'book a service', 'service'].includes(lower) || 
+  if (!session.state && (['book service', 'service booking', 'schedule service', 'book a service', 'service'].includes(lower) || 
       lower.includes('book service') || lower.includes('service booking') || lower.includes('schedule service') ||
       lower.includes('book a service') || lower.includes('सर्विस') || lower.includes('सर्विस बुक') ||
-      lower.includes('service karva') || lower.includes('service chahiye') || lower.includes('गाड़ी की सर्विस')) {
+      lower.includes('service karva') || lower.includes('service chahiye') || lower.includes('गाड़ी की सर्विस'))) {
     session.state = 'service_booking';
     session.data = {};
     setSession(userId, session);
     
-    // Check if input is Hinglish
-    const isHinglish = /[a-zA-Z]/.test(input) && /[हिंदीकन्नडमराठी]/.test(input) || 
-                       /(main|aap|hai|hain|chahta|chahti|hoon|hain|dekh|raha|rahi|tha|lagbhag|se|lakh|ke|beech|petrol|hi|chahiye|zaroor|pehle|dikha|dijiye|ji|theek|dhanyavaad|swagat|sir|aapka|madad|kar|sakta|kya|mann|koi|khaas|brand|ya|model|bahut|badhiya|chunaav|budget|kitna|range|hamare|paas|model|dono|uplabdh|variant|chahte|bilkul|test|drive|lena|chahenge|turant|gaadi|tayyar|karwata|waise|driving|license|aaiye|rahi|baad|emi|offer|poori|jankari|de|doonga)/i.test(input);
+    // Check if input is Hinglish using proper detection
+    const isHinglish = checkIsHinglish(input);
     
     const serviceMessages = {
       english: `Great! I'll help you book a service for your vehicle. Please provide the following details:\n\n**Vehicle Details:**\n• Make: (e.g., Hyundai, Maruti, Honda)\n• Model: (e.g., i20, Swift, City)\n• Year: (e.g., 2020, 2021)\n• Registration Number: (e.g., KA01AB1234)\n\n**Service Type:**\n• Regular Service\n• Major Service\n• Accident Repair\n• Insurance Claim\n• Other (please specify)\n\nPlease share all details in one message.`,
@@ -383,7 +450,8 @@ Please type the number (1-4) or language name.`;
   };
 
   // Enhanced browse flow with better context retention and fuzzy matching
-  if (!session.state && /^(browse|used cars|show cars|i want to buy|looking for a car|search used cars)$/i.test(lower.trim())) {
+  if (!session.state && (/^(browse|used cars|show cars|i want to buy|looking for a car|search used cars)$/i.test(lower.trim()) ||
+      lower.includes('show me cars') || lower.includes('can you show') && lower.includes('car'))) {
     session.data = session.data || {};
     
     // Extract information from current input
@@ -658,9 +726,8 @@ Please type the number (1-4) or language name.`;
     session.data = session.data || {}; 
     setSession(userId, session);
     
-    // Check if input is Hinglish
-    const isHinglish = /[a-zA-Z]/.test(input) && /[हिंदीकन्नडमराठी]/.test(input) || 
-                       /(main|aap|hai|hain|chahta|chahti|hoon|hain|dekh|raha|rahi|tha|lagbhag|se|lakh|ke|beech|petrol|hi|chahiye|zaroor|pehle|dikha|dijiye|ji|theek|dhanyavaad|swagat|sir|aapka|madad|kar|sakta|kya|mann|koi|khaas|brand|ya|model|bahut|badhiya|chunaav|budget|kitna|range|hamare|paas|model|dono|uplabdh|variant|chahte|bilkul|test|drive|lena|chahenge|turant|gaadi|tayyar|karwata|waise|driving|license|aaiye|rahi|baad|emi|offer|poori|jankari|de|doonga)/i.test(input);
+    // Check if input is Hinglish using proper detection
+    const isHinglish = checkIsHinglish(input);
     
     const browseMessages = {
       english: "Great! What's your budget (maximum)?\nYou can type values like '12 lakhs', 'below 20 lakhs', or a number like 1200000.",
@@ -725,18 +792,27 @@ Please type the number (1-4) or language name.`;
 
   // Parse budget first, then proceed to filters
   if (session.state === 'browse_budget') {
-    // Enhanced budget parsing for multiple languages
-    const lakhs = input.match(/(\d+[\.]?\d*)\s*(lakh|lakhs|lak|laks|लाख|ಲಕ್ಷ|लाख)/i);
-    const below = /(under|below|upto|up to|less than|से कम|ಕಡಿಮೆ|खाली|तक|ರೂಪಾಯಿಗಳವರೆಗೆ|रुपये तक|रुपये पर्यंत)\s+(\d+[\.]?\d*)\s*(lakh|lakhs|lak|laks|लाख|ಲಕ್ಷ|लाख)/i.exec(lower);
-    const above = /(above|over|more than|greater than|से अधिक|ಹೆಚ್ಚು|वर|से ऊपर|ರೂಪಾಯಿಗಳಿಗಿಂತ ಹೆಚ್ಚು|रुपये से अधिक|रुपये वर)/i.exec(lower);
-    const numeric = input.replace(/[,₹\s]/g, '').match(/(\d{5,12})/);
+    // Enhanced budget parsing for multiple languages - handle patterns like "I have a budget of ₹5 lakh"
+    // Use extractBudgetFromMessage which is already defined and handles more patterns
+    const extractedBudget = extractBudgetFromMessage();
+    
     let maxVal = null;
     let minVal = null;
     
-    if (lakhs) maxVal = Math.round(parseFloat(lakhs[1]) * 100000);
-    else if (below) maxVal = Math.round(parseFloat(below[2]) * 100000);
-    else if (above) minVal = Math.round(parseFloat(above[2]) * 100000);
-    else if (numeric) maxVal = Number(numeric[1]);
+    if (extractedBudget) {
+      maxVal = extractedBudget;
+    } else {
+      // Fallback to original patterns for backward compatibility
+      const lakhs = input.match(/(\d+[\.]?\d*)\s*(lakh|lakhs|lak|laks|लाख|ಲಕ್ಷ|लाख)/i);
+      const below = /(under|below|upto|up to|less than|से कम|ಕಡಿಮೆ|खाली|तक|रुपये तक|रुपये पर्यंत)\s*(?:₹)?\s*(\d+[\.]?\d*)\s*(lakh|lakhs|lak|laks|लाख|ಲಕ್ಷ|लाख)/i.exec(lower);
+      const above = /(above|over|more than|greater than|से अधिक|ಹೆಚ್ಚು|वर|से ऊपर|रुपये से अधिक|रुपये वर)/i.exec(lower);
+      const numeric = input.replace(/[,₹\s]/g, '').match(/(\d{5,12})/);
+      
+      if (lakhs) maxVal = Math.round(parseFloat(lakhs[1]) * 100000);
+      else if (below) maxVal = Math.round(parseFloat(below[2]) * 100000);
+      else if (above) minVal = Math.round(parseFloat(above[2]) * 100000);
+      else if (numeric) maxVal = Number(numeric[1]);
+    }
 
     if (!maxVal && !minVal) {
       const budgetErrorMessages = {
@@ -878,7 +954,37 @@ Please type the number (1-4) or language name.`;
   if (session.state === 'browse_pick_make') {
     try {
       const { listMakesTool } = await import('./tools.js');
-      const { makes = [] } = await listMakesTool();
+      const result = await listMakesTool();
+      const makes = result?.makes || result || [];
+      
+      // Ensure makes is an array
+      if (!Array.isArray(makes) || makes.length === 0) {
+        // Fallback to common brands if tool fails
+        const commonMakes = ['Hyundai', 'Maruti', 'Tata', 'Mahindra', 'Kia', 'Honda', 'Toyota', 'Ford', 'Volkswagen', 'Skoda', 'Renault'];
+        const found = commonMakes.find(m => lower.trim() === m.toLowerCase());
+        if (found) {
+          session.data.make = found;
+          session.state = 'browse_show_results';
+          setSession(userId, session);
+          const { searchInventoryTool } = await import('./tools.js');
+          const { results } = await searchInventoryTool({ 
+            make: found, 
+            type: session.data.type, 
+            maxPrice: session.data.maxPrice,
+            minPrice: session.data.minPrice
+          });
+          if (!results || results.length === 0) {
+            return 'No matches found. You can change brand or budget.';
+          }
+          session.state = 'browse_pick_vehicle';
+          session.data.vehicles = results.slice(0, 10);
+          session.data.carsShown = 0;
+          setSession(userId, session);
+          const { formatMultipleCars } = await import('./tools.js');
+          return formatMultipleCars(session.data.vehicles, 0, userLang);
+        }
+        return `Please select a brand: ${commonMakes.join(' | ')}\nOr type "any brand" to see all brands.`;
+      }
       
       // Check if user wants all brands
       if (/^(any|all|any brand|all brand|any brands|all brands)$/i.test(lower.trim())) {
@@ -910,22 +1016,38 @@ Please type the number (1-4) or language name.`;
       let found = null;
       
       if (brand) {
-        // Try to find exact match first
-        found = makes.find(m => String(m).toLowerCase() === brand.toLowerCase());
+        // Try to find exact match first (case-insensitive)
+        found = makes.find(m => String(m).toLowerCase().trim() === brand.toLowerCase().trim());
         
         // If not found, try partial match
         if (!found) {
-          found = makes.find(m => String(m).toLowerCase().includes(brand.toLowerCase()) || brand.toLowerCase().includes(String(m).toLowerCase()));
+          found = makes.find(m => {
+            const mStr = String(m).toLowerCase().trim();
+            const bStr = brand.toLowerCase().trim();
+            return mStr.includes(bStr) || bStr.includes(mStr);
+          });
         }
       }
       
-      // Fallback to original logic
+      // Fallback 1: check if input exactly matches a brand name (for single word inputs like "mahindra")
+      if (!found && makes.length > 0) {
+        const normalizedInput = lower.trim();
+        found = makes.find(m => String(m).toLowerCase().trim() === normalizedInput);
+      }
+      
+      // Fallback 2: check if input contains a brand name anywhere
       if (!found) {
-        found = makes.find(m => lower.includes(String(m).toLowerCase()));
+        found = makes.find(m => lower.includes(String(m).toLowerCase().trim()));
+      }
+      
+      // Fallback 3: reverse match - check if any brand name contains the input
+      if (!found && lower.trim().length > 2) {
+        found = makes.find(m => String(m).toLowerCase().trim().includes(lower.trim()));
       }
       
       if (!found) {
-        return `Please select a valid brand: ${makes.slice(0,30).join(' | ')}\nOr type "any brand" to see all brands.`;
+        const brandList = makes.length > 0 ? makes.slice(0,30).join(' | ') : 'Hyundai | Maruti | Tata | Mahindra | Kia | Honda | Toyota';
+        return `Please select a valid brand: ${brandList}\nOr type "any brand" to see all brands.`;
       }
       session.data.make = found;
       session.state = 'browse_show_results';
@@ -1085,7 +1207,7 @@ Please type the number (1-4) or language name.`;
       session.data.customerName = name;
       session.state = 'testdrive_phone';
       setSession(userId, session);
-			const isHinglish = /[a-zA-Z]/.test(input) && /[हिंदीकन्नडमराठी]/.test(input) || /(main|aap|hai|hain|chahta|chahti|hoon|dekh|raha|rahi|kripya|phone|number|license|dl|yes|no)/i.test(input);
+			const isHinglish = checkIsHinglish(input);
 			const messages = {
 				english: `Thanks ${name}! Now please provide your **phone number** and confirm if you have a **valid driving license**.\n\nFormat: Phone: [your number], DL: Yes/No`,
 				hindi: isHinglish
@@ -1096,7 +1218,7 @@ Please type the number (1-4) or language name.`;
 			};
 			return messages[userLang] || messages.english;
     } else {
-			const isHinglish = /[a-zA-Z]/.test(input) && /[हिंदीकन्नडमराठी]/.test(input) || /(naam|name|batayein)/i.test(input);
+			const isHinglish = checkIsHinglish(input);
 			const messages = {
 				english: 'Please provide your full name. Format: Name: [Your full name]',
 				hindi: isHinglish ? 'Kripya apna poora naam batayein. Format: Name: [aapka poora naam]' : 'कृपया अपना पूरा नाम बताएं। फॉर्मेट: Name: [आपका पूरा नाम]',
@@ -1127,7 +1249,7 @@ Please type the number (1-4) or language name.`;
       session.data.hasDL = hasDL;
       session.state = 'testdrive_location';
       setSession(userId, session);
-			const isHinglish = /[a-zA-Z]/.test(input) && /[हिंदीकन्नडमराठी]/.test(input) || /(location|branch|showroom|kahan|kahaan|choose|chune)/i.test(input);
+			const isHinglish = checkIsHinglish(input);
 			const messages = {
 				english: `Perfect! Phone: ${phone}, DL: ${hasDL ? 'Yes' : 'No'}\n\nNow please choose your preferred **test drive location**:\n\n1. **Main Showroom** (MG Road)\n2. **Banashankari Branch**\n3. **Whitefield Branch**\n\nType the number (1, 2, or 3) or location name.`,
 				hindi: isHinglish
@@ -1138,7 +1260,7 @@ Please type the number (1-4) or language name.`;
 			};
 			return messages[userLang] || messages.english;
     } else {
-			const isHinglish = /[a-zA-Z]/.test(input) && /[हिंदीकन्नडमराठी]/.test(input) || /(phone|number|dl|yes|no)/i.test(input);
+			const isHinglish = checkIsHinglish(input);
 			const messages = {
 				english: 'Please provide both phone number and DL status. Format: Phone: [your number], DL: Yes/No',
 				hindi: isHinglish ? 'Kripya phone number aur DL status dono dein. Format: Phone: [aapka number], DL: Yes/No' : 'कृपया फोन नंबर और DL स्थिति दोनों दें। फॉर्मेट: Phone: [आपका नंबर], DL: Yes/No',
@@ -1159,7 +1281,7 @@ Please type the number (1-4) or language name.`;
     } else if (lower.includes('3') || lower.includes('whitefield')) {
       location = 'Whitefield Branch';
     } else {
-			const isHinglish = /[a-zA-Z]/.test(input) && /[हिंदीकन्नडमराठी]/.test(input) || /(location|select|chune|choose)/i.test(input);
+			const isHinglish = checkIsHinglish(input);
 			const messages = {
 				english: 'Please select a location. Type 1, 2, or 3, or mention the location name.',
 				hindi: isHinglish ? 'Kripya location select karein. 1, 2, ya 3 type karein, ya location ka naam likhein.' : 'कृपया लोकेशन चुनें। 1, 2, या 3 टाइप करें, या लोकेशन का नाम लिखें।',
@@ -1177,7 +1299,7 @@ Please type the number (1-4) or language name.`;
     const car = session.data.testDriveCar;
     const carName = `${car.brand || car.make} ${car.model} ${car.variant || ''}`.trim();
     const confirmationId = `TD-${Date.now().toString().slice(-6)}`;
-		const isHinglish = /[a-zA-Z]/.test(input) && /[हिंदीकन्नडमराठी]/.test(input) || /(confirm|book|ho gaya|details)/i.test(input);
+		const isHinglish = checkIsHinglish(input);
 		const messages = {
 			english: `🎉 **Test Drive Confirmed!**\n\n📋 **Booking Details:**\n• **Car:** ${carName}\n• **Customer:** ${session.data.customerName}\n• **Phone:** ${session.data.customerPhone}\n• **Location:** ${location}\n• **Confirmation ID:** ${confirmationId}\n• **Date:** Tomorrow (11:00 AM - 12:00 PM)\n\n✅ **You'll receive a confirmation message shortly!**\n\nIs there anything else I can help you with?`,
 			hindi: isHinglish
@@ -1198,9 +1320,8 @@ Please type the number (1-4) or language name.`;
     session.data = {}; 
     setSession(userId, session);
     
-    // Check if input is Hinglish
-    const isHinglish = /[a-zA-Z]/.test(input) && /[हिंदीकन्नडमराठी]/.test(input) || 
-                       /(main|aap|hai|hain|chahta|chahti|hoon|hain|dekh|raha|rahi|tha|lagbhag|se|lakh|ke|beech|petrol|hi|chahiye|zaroor|pehle|dikha|dijiye|ji|theek|dhanyavaad|swagat|sir|aapka|madad|kar|sakta|kya|mann|koi|khaas|brand|ya|model|bahut|badhiya|chunaav|budget|kitna|range|hamare|paas|model|dono|uplabdh|variant|chahte|bilkul|test|drive|lena|chahenge|turant|gaadi|tayyar|karwata|waise|driving|license|aaiye|rahi|baad|emi|offer|poori|jankari|de|doonga)/i.test(input);
+    // Check if input is Hinglish using proper detection
+    const isHinglish = checkIsHinglish(input);
     
     const testDriveMessages = {
       english: 'Great! I\'ll help you book a test drive. Which car are you interested in? Please mention the car name (e.g., "Tata Nexon", "Honda City", "Hyundai Creta").',
@@ -1217,7 +1338,7 @@ Please type the number (1-4) or language name.`;
   // Test Drive Management entries
   if (['my test drive', 'check my test drive', 'test drive status', 'test drive booking'].includes(lower) || lower.includes('my test drive')) {
     session.state = 'testdrive_check'; session.data = {}; setSession(userId, session);
-		const isHinglish = /[a-zA-Z]/.test(input) && /[हिंदीकन्नडमराठी]/.test(input) || /(booking|status|check|dekh)/i.test(input);
+		const isHinglish = checkIsHinglish(input);
 		const messages = {
 			english: 'I can help you check your test drive booking. Please provide your phone number or booking ID.',
 			hindi: isHinglish ? 'Main aapki test drive booking check kar deta hoon. Kripya apna phone number ya booking ID dein.' : 'मैं आपकी टेस्ट ड्राइव बुकिंग चेक कर सकता हूं। कृपया अपना फोन नंबर या बुकिंग ID दें।',
@@ -1229,7 +1350,7 @@ Please type the number (1-4) or language name.`;
 
   if (['cancel test drive', 'cancel my test drive', 'cancel booking'].includes(lower) || lower.includes('cancel test drive')) {
     session.state = 'testdrive_cancel'; session.data = {}; setSession(userId, session);
-		const isHinglish = /[a-zA-Z]/.test(input) && /[हिंदीकन्नडमराठी]/.test(input) || /(cancel|booking|band|radd)/i.test(input);
+		const isHinglish = checkIsHinglish(input);
 		const messages = {
 			english: 'I can help you cancel your test drive booking. Please provide your phone number or booking ID.',
 			hindi: isHinglish ? 'Main aapki test drive booking cancel karne mein madad karunga. Kripya phone number ya booking ID dein.' : 'मैं आपकी टेस्ट ड्राइव बुकिंग रद्द करने में मदद कर सकता हूं। कृपया फोन नंबर या बुकिंग ID दें।',
@@ -1293,6 +1414,68 @@ Please choose a date or type "custom" for a specific date.`;
     }
   }
 
+  // Car availability check - should be checked BEFORE financing flow
+  // This handles questions like "Is the white Toyota Innova currently available?"
+  // Allow this check even if in another flow (e.g., user wants to check availability while in financing flow)
+  if (lower.includes('available') || lower.includes('availability') || lower.includes('in stock') || 
+      (lower.includes('have') && (lower.includes('toyota') || lower.includes('hyundai') || lower.includes('maruti') || 
+       lower.includes('honda') || lower.includes('kia') || lower.includes('mahindra') || lower.includes('tata')))) {
+    // Extract car name from the question
+    const carBrands = ['toyota', 'hyundai', 'maruti', 'honda', 'kia', 'mahindra', 'tata', 'ford', 'renault', 'volkswagen', 'skoda', 'mg'];
+    const carModels = ['innova', 'creta', 'i20', 'swift', 'city', 'seltos', 'thar', 'nexon', 'venue', 'brezza', 'verna', 'santafe', 'tucson'];
+    
+    let carName = null;
+    for (const brand of carBrands) {
+      if (lower.includes(brand)) {
+        const modelMatch = input.match(new RegExp(`${brand}\\s+([a-z0-9]+)`, 'i'));
+        if (modelMatch) {
+          carName = `${brand} ${modelMatch[1]}`;
+        } else {
+          // Try to find model separately
+          for (const model of carModels) {
+            if (lower.includes(model)) {
+              carName = `${brand} ${model}`;
+              break;
+            }
+          }
+          if (!carName) carName = brand;
+        }
+        break;
+      }
+    }
+    
+    // If car name found, search inventory
+    if (carName) {
+      try {
+        const { searchInventoryTool } = await import('./tools.js');
+        const searchResults = await searchInventoryTool({ model: carName });
+        
+        if (searchResults.results && searchResults.results.length > 0) {
+          const availabilityMessages = {
+            english: `Yes! We have ${searchResults.results.length} ${carName} car${searchResults.results.length > 1 ? 's' : ''} available in our inventory. Would you like to see the details?`,
+            hinglish: `Haanji! Humare paas ${searchResults.results.length} ${carName} car${searchResults.results.length > 1 ? 's' : ''} available ${searchResults.results.length > 1 ? 'hain' : 'hai'}. Kya aap details dekhna chahenge?`,
+            hindi: `हाँ! हमारे पास ${searchResults.results.length} ${carName} कार उपलब्ध है। क्या आप विवरण देखना चाहेंगे?`,
+            kannada: `ಹೌದು! ನಮ್ಮ ಸ್ಟಾಕ್ನಲ್ಲಿ ${searchResults.results.length} ${carName} ಕಾರುಗಳು ಲಭ್ಯವಿದೆ. ನೀವು ವಿವರಗಳನ್ನು ನೋಡಲು ಬಯಸುವಿರಾ?`,
+            marathi: `होय! आमच्याकडे ${searchResults.results.length} ${carName} गाडी उपलब्ध आहे. तुम्हाला तपशील पाहायचे आहेत का?`
+          };
+          return availabilityMessages[userLang] || availabilityMessages.english;
+        } else {
+          const notAvailableMessages = {
+            english: `I'm sorry, we don't currently have "${carName}" available in our inventory. Would you like to search for similar cars or be notified when it becomes available?`,
+            hinglish: `Maaf kijiye, filhaal humare paas "${carName}" available nahi hai. Kya aap similar cars dekhna chahenge ya jab available ho toh notification chahiye?`,
+            hindi: `क्षमा करें, वर्तमान में हमारे पास "${carName}" उपलब्ध नहीं है। क्या आप समान कारें देखना चाहेंगे या उपलब्ध होने पर सूचना चाहिए?`,
+            kannada: `ಕ್ಷಮಿಸಿ, ಪ್ರಸ್ತುತ ನಮ್ಮ ಸ್ಟಾಕ್ನಲ್ಲಿ "${carName}" ಲಭ್ಯವಿಲ್ಲ. ನೀವು ಇದೇ ರೀತಿಯ ಕಾರುಗಳನ್ನು ನೋಡಲು ಬಯಸುವಿರಾ ಅಥವಾ ಲಭ್ಯವಾದಾಗ ಅಧಿಸೂಚನೆಯನ್ನು ಬಯಸುವಿರಾ?`,
+            marathi: `माफ करा, सध्या आमच्याकडे "${carName}" उपलब्ध नाही. तुम्ही समान गाड्या पाहू इच्छिता किंवा त्या उपलब्ध झाल्यावर सूचना हवी आहे का?`
+          };
+          return notAvailableMessages[userLang] || notAvailableMessages.english;
+        }
+      } catch (error) {
+        console.error('Error checking car availability:', error);
+        // Fall through to Gemini if search fails
+      }
+    }
+  }
+
   // Enhanced EMI/Financing flow with multilingual support
   if (['emi', 'financing', 'loan', 'car loan', 'emi options', 'financing options', 'loan options'].includes(lower) ||
       lower.includes('emi') || lower.includes('loan') || lower.includes('financing') || 
@@ -1302,9 +1485,8 @@ Please choose a date or type "custom" for a specific date.`;
     session.data = {};
     setSession(userId, session);
     
-    // Check if input is Hinglish
-    const isHinglish = /[a-zA-Z]/.test(input) && /[हिंदीकन्नडमराठी]/.test(input) || 
-                       /(main|aap|hai|hain|chahta|chahti|hoon|hain|dekh|raha|rahi|tha|lagbhag|se|lakh|ke|beech|petrol|hi|chahiye|zaroor|pehle|dikha|dijiye|ji|theek|dhanyavaad|swagat|sir|aapka|madad|kar|sakta|kya|mann|koi|khaas|brand|ya|model|bahut|badhiya|chunaav|budget|kitna|range|hamare|paas|model|dono|uplabdh|variant|chahte|bilkul|test|drive|lena|chahenge|turant|gaadi|tayyar|karwata|waise|driving|license|aaiye|rahi|baad|emi|offer|poori|jankari|de|doonga)/i.test(input);
+    // Check if input is Hinglish using proper detection
+    const isHinglish = checkIsHinglish(input);
     
     const financingMessages = {
       english: `Great! I'll help you with financing options. Please provide:\n\n**Car Details:**\n• Car Model: (e.g., Hyundai i20, Maruti Swift)\n• Car Price: (e.g., ₹8,00,000)\n• Down Payment: (e.g., ₹2,00,000)\n• Loan Tenure: (e.g., 3, 4, 5 years)\n\n**Your Details:**\n• Monthly Income: (e.g., ₹50,000)\n• Employment Type: (Salaried/Self-employed)\n\nPlease share all details in one message.`,
@@ -1326,9 +1508,8 @@ Please choose a date or type "custom" for a specific date.`;
     session.data = {}; 
     setSession(userId, session);
     
-    // Check if input is Hinglish
-    const isHinglish = /[a-zA-Z]/.test(input) && /[हिंदीकन्नडमराठी]/.test(input) || 
-                       /(main|aap|hai|hain|chahta|chahti|hoon|hain|dekh|raha|rahi|tha|lagbhag|se|lakh|ke|beech|petrol|hi|chahiye|zaroor|pehle|dikha|dijiye|ji|theek|dhanyavaad|swagat|sir|aapka|madad|kar|sakta|kya|mann|koi|khaas|brand|ya|model|bahut|badhiya|chunaav|budget|kitna|range|hamare|paas|model|dono|uplabdh|variant|chahte|bilkul|test|drive|lena|chahenge|turant|gaadi|tayyar|karwata|waise|driving|license|aaiye|rahi|baad|emi|offer|poori|jankari|de|doonga)/i.test(input);
+    // Check if input is Hinglish using proper detection
+    const isHinglish = checkIsHinglish(input);
     
     const valuationMessages = {
       english: 'To estimate your car value, please share:\nMake: \nModel: \nYear: \nKilometers: \nCondition (excellent/good/fair): \nCity:',
@@ -1344,34 +1525,72 @@ Please choose a date or type "custom" for a specific date.`;
 
   // Test Drive Booking Flow
   if (session.state === 'testdrive_car') {
-    // Extract car name from input
-    const carMatch = input.match(/(?:for|of|the)\s+([^,]+)/i) || input.match(/([A-Za-z\s]+(?:nexon|creta|city|verna|i20|swift|baleno|fortuner|innova|seltos|venue|xuv|scorpio|tiago|jazz|elevate|virtus|kushaq))/i);
-    const carName = carMatch ? carMatch[1].trim() : input.trim();
+    // Extract car name from input - improved pattern matching
+    const carMatch = input.match(/(?:for|of|the|test drive)\s+([^,]+)/i) || 
+                     input.match(/([A-Za-z\s]+(?:nexon|creta|city|verna|i20|swift|baleno|fortuner|innova|seltos|venue|xuv|scorpio|tiago|jazz|elevate|virtus|kushaq|thar|scorpio|altroz|glanza|jazz|amaze|ciaz|vitara|brezza|s-presso|wagon|r|ignis|ciaz|swift|baleno|dzire|s-presso|vitara|brezza|eeco|omni|gypsy))/i) ||
+                     input.match(/(hyundai|tata|maruti|mahindra|honda|toyota|ford|kia|renault|volkswagen|skoda|mg|nissan|jeep|volvo|bmw|mercedes|audi)\s+([a-z0-9\s]+)/i);
+    
+    let carName = carMatch ? (carMatch[2] ? `${carMatch[1]} ${carMatch[2]}`.trim() : carMatch[1].trim()) : input.trim();
+    
+    // Normalize car name - handle case variations and common patterns
+    carName = carName.trim();
     
     if (!carName || carName.length < 3) {
       return 'Please specify the car name clearly. Examples: "Tata Nexon", "Honda City", "Hyundai Creta"';
     }
     
-    // Validate car exists in inventory
+    // Validate car exists in inventory - improved search strategy
     try {
       const { searchInventoryTool } = await import('./tools.js');
-      const { results } = await searchInventoryTool({ model: carName });
       
-      if (!results || results.length === 0) {
+      // Try multiple search strategies for better matching
+      // Strategy 1: Normalize car name for better matching
+      const normalizedCarName = carName.trim();
+      
+      // Strategy 2: Search by full model name (case-insensitive via ILIKE in DB)
+      let searchResults = await searchInventoryTool({ model: normalizedCarName });
+      
+      // Strategy 3: If no results, try splitting brand and model
+      if (!searchResults.results || searchResults.results.length === 0) {
+        const words = normalizedCarName.split(/\s+/);
+        if (words.length >= 2) {
+          const brand = words[0];
+          const model = words.slice(1).join(' ');
+          searchResults = await searchInventoryTool({ brand: brand, model: model });
+        }
+      }
+      
+      // Strategy 4: If still no results, try with just model (common case: "Hyundai creta" -> "creta")
+      if (!searchResults.results || searchResults.results.length === 0) {
+        const modelWords = normalizedCarName.split(/\s+/);
+        const modelOnly = modelWords.length > 1 ? modelWords.slice(1).join(' ') : normalizedCarName;
+        searchResults = await searchInventoryTool({ model: modelOnly });
+      }
+      
+      // Strategy 5: Try brand-only search if model-only didn't work
+      if (!searchResults.results || searchResults.results.length === 0) {
+        const words = normalizedCarName.split(/\s+/);
+        if (words.length >= 2) {
+          const brand = words[0];
+          searchResults = await searchInventoryTool({ brand: brand });
+        }
+      }
+      
+      if (!searchResults.results || searchResults.results.length === 0) {
         return `I couldn't find "${carName}" in our current inventory. Please check the car name or browse our available cars first.`;
       }
       
       // Store the first matching car for test drive
-    session.data.carName = carName;
-      session.data.selectedCar = results[0];
-    session.state = 'testdrive_date';
-    setSession(userId, session);
-    
-    const today = new Date();
-    const tomorrow = new Date(today.getTime() + 24 * 60 * 60 * 1000);
-    const dayAfter = new Date(today.getTime() + 2 * 24 * 60 * 60 * 1000);
+      session.data.carName = carName;
+      session.data.selectedCar = searchResults.results[0];
+      session.state = 'testdrive_date';
+      setSession(userId, session);
       
-      const carInfo = results[0];
+      const today = new Date();
+      const tomorrow = new Date(today.getTime() + 24 * 60 * 60 * 1000);
+      const dayAfter = new Date(today.getTime() + 2 * 24 * 60 * 60 * 1000);
+      
+      const carInfo = searchResults.results[0];
       const priceStr = carInfo.price ? `₹${carInfo.price.toLocaleString('en-IN')}` : 'Price: N/A';
     
     return `Perfect! You want to test drive: **${carName}**
@@ -1855,9 +2074,8 @@ Thank you for choosing Sherpa Hyundai Service! 🚗`;
     session.data = {};
     setSession(userId, session);
     
-    // Check if input is Hinglish
-    const isHinglish = /[a-zA-Z]/.test(input) && /[हिंदीकन्नडमराठी]/.test(input) || 
-                       /(main|aap|hai|hain|chahta|chahti|hoon|hain|dekh|raha|rahi|tha|lagbhag|se|lakh|ke|beech|petrol|hi|chahiye|zaroor|pehle|dikha|dijiye|ji|theek|dhanyavaad|swagat|sir|aapka|madad|kar|sakta|kya|mann|koi|khaas|brand|ya|model|bahut|badhiya|chunaav|budget|kitna|range|hamare|paas|model|dono|uplabdh|variant|chahte|bilkul|test|drive|lena|chahenge|turant|gaadi|tayyar|karwata|waise|driving|license|aaiye|rahi|baad|emi|offer|poori|jankari|de|doonga)/i.test(input);
+    // Check if input is Hinglish using proper detection
+    const isHinglish = checkIsHinglish(input);
     
     const appointmentMessages = {
       english: `Great! I'll help you book an appointment. Please provide:\n\n**Appointment Details:**\n• Purpose: (e.g., Car Consultation, Test Drive, Service)\n• Preferred Date: (e.g., Tomorrow, Next Week, Specific Date)\n• Preferred Time: (e.g., Morning, Afternoon, Evening)\n• Duration: (e.g., 30 minutes, 1 hour)\n\n**Your Details:**\n• Name:\n• Phone Number:\n• Email (optional):\n\nPlease share all details in one message.`,
@@ -1872,7 +2090,41 @@ Thank you for choosing Sherpa Hyundai Service! 🚗`;
   }
 
   // Enhanced financing completion handler
+  // Only continue financing flow if user is actually providing financing details or explicitly asking about financing
+  // Don't treat unrelated questions (like car availability) as part of financing flow
   if (session.state === 'financing_inquiry') {
+    // Handle financing-related questions
+    const isFinancingQuestion = lower.includes('100%') || lower.includes('down payment') || lower.includes('interest rate') || 
+                                lower.includes('emi') || lower.includes('loan tenure') || lower.includes('instant loan') ||
+                                lower.includes('zero down') || lower.includes('banks') || lower.includes('approval');
+    
+    // Allow user to exit financing flow if they ask about something else (but allow financing questions)
+    if (!isFinancingQuestion) {
+      const isCarAvailabilityQuestion = lower.includes('available') || lower.includes('availability') || 
+                                         (lower.includes('have') && lower.includes('car'));
+      const isCarSearchQuestion = lower.includes('looking for') || lower.includes('search') || 
+                                  lower.includes('show me') || lower.includes('find');
+      
+      if (isCarAvailabilityQuestion || isCarSearchQuestion) {
+        // Reset session to allow new flow
+        session.state = null;
+        session.data = session.data || {};
+        setSession(userId, session);
+        // Let it fall through to handle the car search/availability question
+        // The availability check above will handle it
+      }
+    }
+    
+    // Handle financing questions directly
+    if (isFinancingQuestion) {
+      const financingQAMessages = {
+        english: 'For used cars, typically banks offer 70-90% financing. Down payment requirements vary (usually 10-30% of car value). Interest rates for used cars range from 8-15% p.a. We work with multiple banks for quick approvals. Would you like me to calculate EMI for a specific car?',
+        hinglish: 'Used cars ke liye, typically banks 70-90% financing dete hain. Down payment requirements vary hoti hain (usually 10-30% of car value). Interest rates used cars ke liye 8-15% p.a. tak range karti hain. Hum multiple banks ke saath kaam karte hain quick approvals ke liye. Kya aap chahenge ki main kisi specific car ke liye EMI calculate karun?',
+        hindi: 'पुरानी कारों के लिए, आमतौर पर बैंक 70-90% वित्तपोषण देते हैं। डाउन पेमेंट की आवश्यकताएं अलग-अलग होती हैं (आमतौर पर कार मूल्य का 10-30%)। पुरानी कारों के लिए ब्याज दरें 8-15% प्रति वर्ष तक होती हैं। हम त्वरित अनुमोदन के लिए कई बैंकों के साथ काम करते हैं। क्या आप चाहेंगे कि मैं किसी विशिष्ट कार के लिए EMI की गणना करूं?'
+      };
+      return financingQAMessages[userLang] || financingQAMessages.english;
+    }
+    
     const carModelMatch = input.match(/car\s*model\s*:\s*(.*)/i) || input.match(/कार\s*मॉडल\s*:\s*(.*)/i);
     const carPriceMatch = input.match(/car\s*price\s*:\s*₹?([\d,]+)/i) || input.match(/कार\s*कीमत\s*:\s*₹?([\d,]+)/i);
     const downPaymentMatch = input.match(/down\s*payment\s*:\s*₹?([\d,]+)/i) || input.match(/डाउन\s*पेमेंट\s*:\s*₹?([\d,]+)/i);
@@ -2047,5 +2299,6 @@ Thank you for choosing Sherpa Hyundai Service! 🚗`;
 
   return null;
 }
+
 
 
