@@ -301,6 +301,8 @@ export async function compareCarsTool(args) {
     .replace(/\bkea\b/g, 'kia')
     .replace(/\bseltis\b/g, 'seltos')
     .replace(/\bhundai\b/g, 'hyundai')
+    .replace(/\btoyoto\b/g, 'toyota')
+    .replace(/\bcamary\b/g, 'camry')
     .replace(/\bcretaa\b/g, 'creta')
     .replace(/\s+/g, ' ')
     .trim();
@@ -315,7 +317,7 @@ export async function compareCarsTool(args) {
     const clauses = [];
     const params = [];
     tokens.forEach((t, i) => {
-      clauses.push(`(${alias}.make ilike $${startIndex + i} or ${alias}.model ilike $${startIndex + i})`);
+      clauses.push(`(${alias}.brand ilike $${startIndex + i} or ${alias}.model ilike $${startIndex + i} or ${alias}.variant ilike $${startIndex + i})`);
       params.push(`%${t}%`);
     });
     return { clause: clauses.join(' and '), params };
@@ -324,8 +326,8 @@ export async function compareCarsTool(args) {
   const q1 = likeClause('c', parts1, 1);
   const q2 = likeClause('c', parts2, 1);
 
-  const query1 = `select * from cars c where ${q1.clause.replaceAll('make','brand')} order by price asc limit 3`;
-  const query2 = `select * from cars c where ${q2.clause.replaceAll('make','brand')} order by price asc limit 3`;
+  const query1 = `select * from cars c where ${q1.clause} order by price asc limit 3`;
+  const query2 = `select * from cars c where ${q2.clause} order by price asc limit 3`;
 
   const { rows: cars1 } = await pool.query(query1, q1.params);
   const { rows: cars2 } = await pool.query(query2, q2.params);
@@ -344,7 +346,13 @@ export async function compareCarsTool(args) {
       fuel1: cars1[0]?.fuel_type || 'N/A',
       fuel2: cars2[0]?.fuel_type || 'N/A',
       mileage1: cars1[0]?.mileage || 'N/A',
-      mileage2: cars2[0]?.mileage || 'N/A'
+      mileage2: cars2[0]?.mileage || 'N/A',
+      brand1: cars1[0]?.brand || null,
+      model1: cars1[0]?.model || null,
+      variant1: cars1[0]?.variant || null,
+      brand2: cars2[0]?.brand || null,
+      model2: cars2[0]?.model || null,
+      variant2: cars2[0]?.variant || null
     }
   };
 }
@@ -613,7 +621,7 @@ export async function sendTestDriveNotificationTool(args) {
   try {
     // Get booking details
     const { rows } = await pool.query(
-      `SELECT * FROM test_drive_bookings WHERE id = $1 OR confirmation_id = $1`,
+      `SELECT * FROM test_drive_bookings WHERE id::text = $1 OR confirmation_id = $1`,
       [bookingId]
     );
     

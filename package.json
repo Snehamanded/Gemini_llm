@@ -7,7 +7,9 @@
     "dev": "node --watch src/server.js",
     "start": "node src/server.js",
     "import:cars": "node scripts/import_cars.js car_data_1.xlsx",
-    "test:english": "node scripts/test_english_conversations.js"
+    "test:db": "node scripts/test_db.js",
+    "test:scenarios": "node scripts/test_conversations.js",
+    "test:brands": "node scripts/test_brands.js"
   },
   "dependencies": {
     "@google/generative-ai": "^0.21.0",
