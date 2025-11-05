@@ -122,40 +122,28 @@ export async function handleDeterministicFlows(userId, text) {
   const lower = input.toLowerCase();
   const session = getSession(userId);
   
-  // Early intents: financing/EMI (stateful)
-  if (/\b(emi|financ(ing|e))\b/i.test(input) || session.state === 'financing') {
-    // Enter financing state
-    session.state = 'financing';
-    session.data = session.data || {};
-    // Extract budget and term, store in session
+  // Early intents: financing/EMI
+  if (/\b(emi|financ(ing|e))\b/i.test(input)) {
+    // Try to extract a numeric price or lakh amount
     const lakhMatch = input.match(/(\d+(?:\.\d+)?)\s*(lakh|lakhs|lac|lacs)/i);
     const numMatch = input.replace(/[,₹]/g, '').match(/\b(\d{5,9})\b/);
-    const yearsMatch = input.match(/(\d+)\s*(years|year|yrs|yr)/i);
-    const monthsMatch = input.match(/(\d+)\s*(months|month|mth|m)/i);
-    if (lakhMatch) session.data.emiBudget = Math.round(parseFloat(lakhMatch[1]) * 100000);
-    else if (numMatch) session.data.emiBudget = parseInt(numMatch[1], 10);
-    if (yearsMatch) session.data.emiTermMonths = parseInt(yearsMatch[1], 10) * 12;
-    else if (monthsMatch) session.data.emiTermMonths = parseInt(monthsMatch[1], 10);
-    setSession(userId, session);
-    // If we have enough info, compute immediately
-    const vehiclePrice = session.data.emiBudget;
-    const termMonths = session.data.emiTermMonths || 60;
-    if (vehiclePrice) {
-      try {
-        const { financingQuoteTool } = await import('./tools.js');
-        const quote = await financingQuoteTool({ vehiclePrice, termMonths });
-        return `For ~₹${vehiclePrice.toLocaleString('en-IN')} over ${termMonths} months: \n• Estimated EMI: ₹${quote.monthlyPayment.toLocaleString('en-IN')}\n• Total Interest: ₹${quote.totalInterest.toLocaleString('en-IN')}\n• Total Amount: ₹${quote.totalAmount.toLocaleString('en-IN')}\n\nWant to change tenure or down payment?`;
-      } catch (_) {
-        // fallback below
+    let vehiclePrice = null;
+    if (lakhMatch) {
+      vehiclePrice = Math.round(parseFloat(lakhMatch[1]) * 100000);
+    } else if (numMatch) {
+      vehiclePrice = parseInt(numMatch[1], 10);
+    }
+    try {
+      const { getFinancingInfoTool } = await import('./tools.js');
+      if (vehiclePrice) {
+        const info = await getFinancingInfoTool({ vehiclePrice });
+        if (info.ok) {
+          const opt = info.financingOptions[0];
+          return `For ~₹${vehiclePrice.toLocaleString('en-IN')}, an example option: \n• Down payment: ${opt.downPaymentPercent}% (₹${opt.downPaymentAmount.toLocaleString('en-IN')})\n• Term: ${opt.termMonths} months\n• APR: ${opt.aprPercent}%\n• Estimated EMI: ₹${opt.monthlyPayment.toLocaleString('en-IN')}\n\nNeed more options or want to adjust down payment/tenure?`;
+        }
       }
-    }
-    // Ask for missing piece minimally
-    if (!session.data.emiBudget) {
-      return 'Please share the approximate car price or budget (e.g., 10 lakhs) so I can compute EMI options.';
-    }
-    if (!session.data.emiTermMonths) {
-      return 'For how long do you want the loan? (e.g., 5 years or 60 months)';
-    }
+    } catch (_) {}
+    return 'Please share the approximate car price or budget (e.g., 10 lakhs) so I can compute EMI options.';
   }
 
   // Global greeting/reset: hi/hello/hey/restart should reset flow and greet
@@ -269,8 +257,8 @@ Would you like to book a test drive or see financing options?`;
 • Price: ${priceStr}
 
 Would you like to book a test drive or see financing options?`;
-      }
     }
+  }
 
     // 3) Query DB for details if we have a name hint
     try {
@@ -304,7 +292,7 @@ Would you like to book a test drive or see financing options?`;
     } catch (_) {}
 
     return 'Could you please specify the car model for which you want features? For example: "features of Hyundai i20"';
-  }
+      }
 
   // Simple Hinglish used-car entry
   if (/(second hand|used car|pre[-\s]?owned)/i.test(input)) {
@@ -346,7 +334,7 @@ Would you like to book a test drive or see financing options?`;
       // fallthrough to Gemini
     }
   }
-
+  
   // Entry commands
   if (['3', 'contact', 'contact our team', 'contact us', 'team'].includes(lower)) {
     session.state = 'contact_menu';
@@ -358,7 +346,7 @@ Would you like to book a test drive or see financing options?`;
     setSession(userId, session);
     return aboutMenu();
   }
-  
+
   // Service booking entry
   if (['book service', 'service booking', 'schedule service', 'book a service', 'service'].includes(lower) || 
       lower.includes('book service') || lower.includes('service booking') || lower.includes('schedule service') ||
@@ -543,7 +531,7 @@ Would you like to book a test drive or see financing options?`;
     if (lower.startsWith('4') || lower.includes('our services') || lower.includes('about_services')) return aboutServices();
     if (lower.startsWith('5') || lower.includes('achievements') || lower.includes('about_awards')) return aboutAwards();
     return aboutMenu();
-    }
+  }
   }
 
   // Browse Used Cars entry — always ask budget first
@@ -869,7 +857,7 @@ Would you like to book a test drive or see financing options?`;
             // Try first token as model if over-specified
             const first = model.split(' ')[0];
             res = await searchInventoryTool({ brand, model: first });
-          }
+  }
         } else {
           res = await searchInventoryTool({ model });
         }
@@ -984,7 +972,7 @@ Please choose a date or type "custom" for a specific date.`;
         }
         if ((!results || results.length === 0)) {
           ({ results } = await searchInventoryTool({ model }));
-        }
+      }
       } else {
         ({ results } = await searchInventoryTool({ model: carName }));
       }
