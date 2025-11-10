@@ -154,6 +154,28 @@ export async function handleDeterministicFlows(userId, text) {
     return 'Hello! Welcome to Sherpa Hyundai! How can I help you today?';
   }
 
+  // Showroom timings/hours queries
+  if (/(timing|time|hours?|open|close|when|shop time|showroom time|business hour)/i.test(input)) {
+    return "📅 **SHERPA HYUNDAI TIMINGS:**\n\n**Main Showroom - MG Road:**\n• Mon-Sat: 9:00 AM - 8:00 PM\n• Sunday: 10:00 AM - 6:00 PM\n\n**Branch - Electronic City:**\n• Mon-Sat: 9:00 AM - 8:00 PM\n• Sunday: Closed\n\n**Phone:** +91-9876543210\n\nHow can I help you today?";
+  }
+
+  // Location/address queries
+  if (/(location|address|where|showroom|branch|place)/i.test(input) && !session.state) {
+    return showroomLocations();
+  }
+
+  // Out-of-context query detection (only when no active session state)
+  if (!session.state) {
+    const carKeywords = /\b(car|vehicle|auto|suv|sedan|hatchback|mpv|brand|model|test drive|testdrive|valuation|price|budget|emi|financing|service|repair|insurance|booking|browse|compare|hyundai|maruti|tata|mahindra|kia|honda|toyota|ford|volkswagen|skoda|renault|nissan|mg|jeep|nexon|creta|city|verna|i20|swift|baleno|fortuner|innova|seltos|venue|xuv|scorpio|tiago|jazz|elevate|virtus|kushaq)\b/i;
+    const isCarRelated = carKeywords.test(input);
+    const isGreeting = /^(hi|hello|hey|thanks?|thank you|bye|goodbye)\b/i.test(input);
+    const isAbout = /^(about|contact|help|menu|options)\b/i.test(input);
+    
+    if (!isCarRelated && !isGreeting && !isAbout) {
+      return "I'm your car assistant at Sherpa Hyundai! I can help you with:\n\n• Browse used cars\n• Book test drives\n• Car valuations\n• Compare cars\n• Financing/EMI options\n• Service bookings\n\nWhat would you like to do today?";
+    }
+  }
+
   // Global compare intent: allow comparing even when in other states (e.g., after selecting a car)
   {
     const hasCompare = /\bcompare\b/.test(lower);
@@ -763,10 +785,22 @@ Would you like to book a test drive or see financing options?`;
   // Handle car selection response (test drive booking flow)
   if (session.state === 'car_selected') {
     if (lower.includes('yes') || lower.includes('y') || lower.includes('book') || lower.includes('test drive')) {
-      session.state = 'testdrive_name';
+      // Use new unified flow: date -> time -> location -> contact
       session.data.testDriveCar = session.data.selectedCar;
+      session.data.carName = `${session.data.selectedCar.brand || session.data.selectedCar.make} ${session.data.selectedCar.model}`;
+      session.state = 'testdrive_date';
       setSession(userId, session);
-      return 'Great! Let\'s book your test drive. Please provide your details:\n\n**Name:** (Your full name)';
+      const today = new Date();
+      const tomorrow = new Date(today.getTime() + 24 * 60 * 60 * 1000);
+      const dayAfter = new Date(today.getTime() + 2 * 24 * 60 * 60 * 1000);
+      return `Great! Let's book your test drive for ${session.data.carName}. 
+
+Available dates:
+• Today (${today.toLocaleDateString('en-IN')})
+• Tomorrow (${tomorrow.toLocaleDateString('en-IN')})
+• Day after tomorrow (${dayAfter.toLocaleDateString('en-IN')})
+
+You can also say "this weekend".`;
     } else if (lower.includes('no') || lower.includes('n')) {
       session.state = null;
       session.data = {};
@@ -1203,17 +1237,54 @@ Please share all details in one message.`;
   }
 
   if (session.state === 'testdrive_contact') {
-    const nameMatch = input.match(/name\s*:\s*(.*)/i);
-    const phoneMatch = input.match(/phone\s*:\s*(\+?\d[\d\s-]{6,})/i);
-    const emailMatch = input.match(/email\s*:\s*([^\s]+@[^\s]+\.[^\s]+)/i);
+    // Flexible parsing: try structured format first, then free-form
+    let nameMatch = input.match(/name\s*:\s*([^,]+)/i);
+    let phoneMatch = input.match(/phone\s*:\s*(\+?\d[\d\s-]{6,})/i);
+    let emailMatch = input.match(/email\s*:\s*([^\s,]+@[^\s,]+\.\w+)/i);
     
+    // If no structured format, try free-form: "name, phone email" or "name phone email"
+    if (!nameMatch && !phoneMatch) {
+      // Try to extract email first (most reliable pattern)
+      emailMatch = input.match(/([\w.-]+@[\w.-]+\.\w+)/i);
+      const emailPart = emailMatch ? emailMatch[1] : '';
+      const withoutEmail = input.replace(/([\w.-]+@[\w.-]+\.\w+)/i, '').trim();
+      
+      // Extract phone (10+ digit number)
+      phoneMatch = withoutEmail.match(/(\+?\d[\d\s-]{9,})/);
+      if (phoneMatch) {
+        session.data.customerPhone = phoneMatch[1].replace(/\s|-/g, '');
+        const withoutPhone = withoutEmail.replace(/(\+?\d[\d\s-]{9,})/i, '').trim();
+        // Remaining is name (split by comma if present)
+        const namePart = withoutPhone.split(/[,\s]+/).filter(p => p.length > 2)[0];
+        if (namePart) session.data.customerName = namePart.trim();
+      } else {
+        // No phone found, try to extract name from start
+        const parts = withoutEmail.split(/[,\s]+/).filter(p => p.length > 2);
+        if (parts.length > 0) session.data.customerName = parts[0].trim();
+        if (parts.length > 1) {
+          // Second part might be phone
+          const maybePhone = parts[1].replace(/\D/g, '');
+          if (maybePhone.length >= 10) session.data.customerPhone = maybePhone;
+        }
+      }
+      
+      if (emailMatch) session.data.customerEmail = emailMatch[1].trim();
+    } else {
+      // Structured format found
     if (nameMatch) session.data.customerName = nameMatch[1].trim();
     if (phoneMatch) session.data.customerPhone = phoneMatch[1].replace(/\s|-/g, '');
     if (emailMatch) session.data.customerEmail = emailMatch[1].trim();
+    }
     
     if (!session.data.customerName || !session.data.customerPhone) {
       setSession(userId, session);
       return 'Please provide at least your Name and Phone Number:\n• Your Name:\n• Phone Number:\n• Email (optional):';
+    }
+    
+    // Ensure we have date and time before booking
+    if (!session.data.testDate || !session.data.testTime) {
+      setSession(userId, session);
+      return 'I need to confirm the date and time for your test drive. Please provide:\n• Preferred date (today/tomorrow/this weekend)\n• Preferred time (e.g., 11am, 3pm)';
     }
     
     // Use the enhanced scheduleTestDriveTool
